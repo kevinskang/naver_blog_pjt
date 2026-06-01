@@ -139,7 +139,7 @@ class NaverBlogMCPServer:
         logger.info(f"Registered {len(TOOLS_METADATA)} tools")
 
     async def initialize(self):
-        """브라우저 및 세션 초기화."""
+        """브라우저를 실행합니다. 로그인은 첫 Tool 호출 시점에 수행됩니다."""
         logger.info("Initializing Naver Blog MCP Server...")
 
         # Playwright 시작
@@ -152,9 +152,27 @@ class NaverBlogMCPServer:
         self.browser = await self.playwright.chromium.launch(**browser_config)
         logger.info(f"Browser launched (headless={browser_config.get('headless', True)})")
 
-        # 세션 복원 또는 새 컨텍스트 생성
-        self.context = await self.session_manager.get_or_create_session(self.browser)
-        logger.info("Browser context initialized")
+        # 세션 초기화 시도 (실패해도 서버는 계속 실행)
+        await self._try_init_session()
+
+    async def _try_init_session(self) -> bool:
+        """세션 초기화를 시도합니다. 실패해도 서버를 종료하지 않습니다.
+
+        Returns:
+            초기화 성공 여부
+        """
+        try:
+            self.context = await self.session_manager.get_or_create_session(
+                self.browser, headless=config.HEADLESS
+            )
+            logger.info("Browser context initialized")
+            return True
+        except Exception as e:
+            logger.warning(
+                f"세션 초기화 실패 (Tool 호출 시 재시도됩니다): {e}"
+            )
+            self.context = None
+            return False
 
     async def cleanup(self):
         """리소스 정리."""
@@ -173,16 +191,23 @@ class NaverBlogMCPServer:
             logger.info("Playwright stopped")
 
     async def get_page(self) -> Page:
-        """새 페이지를 생성하거나 기존 페이지를 반환합니다.
+        """세션을 확인하고 페이지를 반환합니다. 세션이 없으면 로그인을 재시도합니다.
 
         Returns:
             Playwright Page 객체
 
         Raises:
-            RuntimeError: 브라우저 컨텍스트가 초기화되지 않은 경우
+            RuntimeError: 로그인 재시도 후에도 세션 생성에 실패한 경우
         """
         if not self.context:
-            raise RuntimeError("Browser context not initialized. Call initialize() first.")
+            logger.info("세션 없음 — 로그인 재시도 중...")
+            success = await self._try_init_session()
+            if not success or not self.context:
+                raise RuntimeError(
+                    "네이버 로그인에 실패했습니다. "
+                    ".env 파일의 NAVER_BLOG_ID, NAVER_BLOG_PASSWORD를 확인하거나 "
+                    "HEADLESS=false로 설정 후 CAPTCHA를 수동으로 처리해주세요."
+                )
 
         # 기존 페이지가 있으면 재사용, 없으면 새로 생성
         pages = self.context.pages

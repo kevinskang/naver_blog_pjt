@@ -1,10 +1,13 @@
 """네이버 로그인 자동화."""
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Optional
 
 from playwright.async_api import Page, BrowserContext, TimeoutError as PlaywrightTimeout
+
+logger = logging.getLogger(__name__)
 
 from .selectors import LOGIN_ID_INPUT, LOGIN_PW_INPUT, LOGIN_BTN
 
@@ -111,7 +114,7 @@ async def login_to_naver(
                         )
 
                 # 에러 메시지 확인 (여러 개가 있을 수 있으므로 first() 사용)
-                error_msg_element = page.locator(".error_message").first()
+                error_msg_element = page.locator(".error_message").first
                 error_msg_count = await page.locator(".error_message:visible").count()
                 if error_msg_count > 0:
                     error_msg = await error_msg_element.text_content()
