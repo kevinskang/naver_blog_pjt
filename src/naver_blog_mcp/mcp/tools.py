@@ -165,6 +165,8 @@ async def handle_create_post(
             blog_id=None,  # 현재 로그인된 블로그 사용
             use_html=False,
             wait_for_completion=publish,
+            category=category,
+            tags=tags,
         )
 
         # 결과에 이미지 정보 추가

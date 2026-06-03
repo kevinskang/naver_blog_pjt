@@ -20,6 +20,72 @@ from .selectors import (
 logger = logging.getLogger(__name__)
 
 
+async def _select_category(page: Page, category_name: str) -> bool:
+    """발행 설정 대화상자에서 카테고리를 선택합니다."""
+    for frame in page.frames:
+        try:
+            # 방법 1: native <select> 요소
+            native_selectors = [
+                "select[name='categoryNo']",
+                "select[name='category']",
+                "select.category_select",
+            ]
+            for sel in native_selectors:
+                if await frame.locator(sel).count() > 0:
+                    await frame.locator(sel).first.select_option(label=category_name)
+                    logger.info(f"카테고리 선택 완료 (native select): {category_name}")
+                    return True
+
+            # 방법 2: 커스텀 드롭다운 버튼 클릭 후 목록에서 선택
+            dropdown_selectors = [
+                ".blog2_series",
+                "[class*='category_select']",
+                "button[class*='category']",
+                "[class*='CategorySelect']",
+            ]
+            for sel in dropdown_selectors:
+                if await frame.locator(sel).count() > 0:
+                    await frame.locator(sel).first.click()
+                    await asyncio.sleep(0.5)
+                    option_sel = f"li:has-text('{category_name}'), a:has-text('{category_name}')"
+                    if await frame.locator(option_sel).count() > 0:
+                        await frame.locator(option_sel).first.click()
+                        logger.info(f"카테고리 선택 완료 (커스텀 드롭다운): {category_name}")
+                        return True
+        except Exception:
+            continue
+
+    logger.warning(f"카테고리 '{category_name}'을 찾을 수 없습니다")
+    return False
+
+
+async def _fill_tags(page: Page, tags: list) -> bool:
+    """발행 설정 대화상자에서 태그를 입력합니다."""
+    for frame in page.frames:
+        try:
+            tag_selectors = [
+                "input[placeholder*='태그']",
+                ".tag_input input",
+                "#tagInput",
+                "input[id*='tag']",
+            ]
+            for sel in tag_selectors:
+                if await frame.locator(sel).count() > 0:
+                    tag_input = frame.locator(sel).first
+                    for tag in tags:
+                        await tag_input.click()
+                        await tag_input.type(tag, delay=30)
+                        await frame.keyboard.press("Enter")
+                        await asyncio.sleep(0.3)
+                    logger.info(f"태그 입력 완료: {tags}")
+                    return True
+        except Exception:
+            continue
+
+    logger.warning("태그 입력 필드를 찾을 수 없습니다")
+    return False
+
+
 class NaverBlogPostError(Exception):
     """네이버 블로그 글쓰기 관련 에러."""
 
@@ -331,7 +397,11 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
 
 
 async def publish_post(
-    page: Page, wait_for_completion: bool = True, timeout: int = 30000
+    page: Page,
+    wait_for_completion: bool = True,
+    timeout: int = 30000,
+    category: Optional[str] = None,
+    tags: Optional[list] = None,
 ) -> Dict[str, Any]:
     """
     블로그 글을 발행합니다.
@@ -450,10 +520,22 @@ async def publish_post(
             await page.screenshot(path="playwright-state/error_publish_btn.png")
             raise NaverBlogPostError("발행 버튼을 찾을 수 없습니다.")
 
-        # 2. 발행 설정 대화상자에서 최종 "발행" 버튼 클릭
+        # 2. 발행 설정 대화상자에서 카테고리/태그 설정 후 최종 "발행" 버튼 클릭
         if publish_clicked:
             try:
                 await asyncio.sleep(1)  # 대화상자 로딩 대기
+
+                # 카테고리 선택
+                if category:
+                    selected = await _select_category(page, category)
+                    if not selected:
+                        logger.warning(f"카테고리 '{category}' 선택 실패 - 기본 카테고리로 발행")
+                    await asyncio.sleep(0.5)
+
+                # 태그 입력
+                if tags:
+                    await _fill_tags(page, tags)
+                    await asyncio.sleep(0.5)
 
                 # 대화상자 내 발행 버튼을 force=True로 클릭 시도
                 final_publish_clicked = False
@@ -549,6 +631,8 @@ async def create_blog_post(
     blog_id: Optional[str] = None,
     use_html: bool = False,
     wait_for_completion: bool = True,
+    category: Optional[str] = None,
+    tags: Optional[list] = None,
 ) -> Dict[str, Any]:
     """
     네이버 블로그에 새 글을 작성하고 발행하는 전체 프로세스.
@@ -560,6 +644,8 @@ async def create_blog_post(
         blog_id: 블로그 ID (옵션)
         use_html: HTML 모드로 본문 입력할지 여부
         wait_for_completion: 발행 완료를 기다릴지 여부
+        category: 카테고리 이름 (옵션)
+        tags: 태그 목록 (옵션)
 
     Returns:
         발행 결과 딕셔너리
@@ -584,7 +670,7 @@ async def create_blog_post(
         await fill_post_content(page, content, use_html)
 
         # 4. 발행
-        result = await publish_post(page, wait_for_completion)
+        result = await publish_post(page, wait_for_completion, category=category, tags=tags)
 
         result["title"] = title
         return result
