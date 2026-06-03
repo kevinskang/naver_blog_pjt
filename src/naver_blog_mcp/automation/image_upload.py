@@ -18,7 +18,9 @@ from ..utils.exceptions import (
     ElementNotFoundError,
     TimeoutError,
 )
+from ..utils.error_handler import handle_playwright_error
 from ..utils.retry import retry_on_error
+from ..utils.iframe_helper import get_editor_frame
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +28,26 @@ logger = logging.getLogger(__name__)
 # 이미지 업로드 관련 셀렉터
 IMAGE_BUTTON_SELECTORS = [
     "button[data-name='image']",
+    "button[data-name='photo']",
+    "button[aria-label*='사진']",
+    "button[aria-label*='이미지']",
+    "button[title*='사진']",
+    "button[title*='이미지']",
     "button:has-text('사진')",
-    ".se-image-toolbar-button",
+    "button:has-text('이미지')",
+    ".se-toolbar-group button[data-name='image']",
+    ".se-toolbar-group button[data-name='photo']",
+    "button.se-toolbar-button-image",
+    "[class*='image'][class*='button']",
 ]
 
-FILE_INPUT_SELECTOR = "input[type='file']#hidden-file"
+FILE_INPUT_SELECTORS = [
+    "input[type='file']",
+    "input[accept*='image']",
+    "input[name*='file']",
+    "input[name*='image']",
+    "input[name*='upload']",
+]
 
 # 업로드된 이미지를 나타내는 셀렉터
 UPLOADED_IMAGE_SELECTORS = [
@@ -40,51 +57,16 @@ UPLOADED_IMAGE_SELECTORS = [
 ]
 
 
-async def get_editor_frame(page: Page) -> Frame:
-    """글쓰기 에디터가 있는 iframe을 가져옵니다.
-
-    Args:
-        page: Playwright Page 객체
-
-    Returns:
-        에디터 iframe의 Frame 객체
-
-    Raises:
-        ElementNotFoundError: iframe을 찾을 수 없는 경우
-        TimeoutError: iframe 로딩 타임아웃
-    """
-    try:
-        # iframe 찾기
-        iframe_selectors = ["iframe#mainFrame", "iframe[name='mainFrame']"]
-
-        for selector in iframe_selectors:
-            try:
-                iframe_element = await page.wait_for_selector(selector, timeout=5000)
-                if iframe_element:
-                    main_frame = await iframe_element.content_frame()
-                    if main_frame:
-                        logger.info(f"Editor iframe found: {selector}")
-                        return main_frame
-            except PlaywrightTimeoutError:
-                continue
-
-        raise ElementNotFoundError(
-            "Editor iframe not found",
-            details={"selectors": iframe_selectors}
-        )
-
-    except PlaywrightTimeoutError as e:
-        raise TimeoutError(
-            "Timeout while waiting for editor iframe",
-            details={"error": str(e)}
-        )
+# Delegate iframe lookup to shared util
+# `get_editor_frame` is provided by `naver_blog_mcp.utils.iframe_helper.get_editor_frame`
 
 
-async def click_image_button(frame: Frame) -> None:
+async def click_image_button(frame: Frame, page: Optional[Page] = None) -> None:
     """이미지 업로드 버튼을 클릭합니다.
 
     Args:
         frame: 에디터 iframe
+        page: 전체 페이지 객체 (fallback용)
 
     Raises:
         ElementNotFoundError: 이미지 버튼을 찾을 수 없는 경우
@@ -94,12 +76,22 @@ async def click_image_button(frame: Frame) -> None:
             button = frame.locator(selector).first
             if await button.count() > 0:
                 await button.click()
-                logger.info(f"Image button clicked: {selector}")
+                logger.info(f"Image button clicked inside frame: {selector}")
                 await asyncio.sleep(0.5)  # 파일 input 생성 대기
                 return
         except Exception as e:
-            logger.debug(f"Failed to click {selector}: {e}")
-            continue
+            logger.debug(f"Frame button click failed for {selector}: {e}")
+
+        if page is not None:
+            try:
+                button = page.locator(selector).first
+                if await button.count() > 0:
+                    await button.click()
+                    logger.info(f"Image button clicked on page: {selector}")
+                    await asyncio.sleep(0.5)
+                    return
+            except Exception as e:
+                logger.debug(f"Page button click failed for {selector}: {e}")
 
     raise ElementNotFoundError(
         "Image button not found",
@@ -160,6 +152,70 @@ async def wait_for_upload_complete(
         raise
 
 
+def _validate_image_path(image_path: Path) -> None:
+    """Validate image path, size and format. Raises UploadError on failure."""
+    if not image_path.exists():
+        raise UploadError(
+            f"Image file not found: {image_path}",
+            details={"path": str(image_path)}
+        )
+
+    file_size = image_path.stat().st_size
+    if file_size > 10 * 1024 * 1024:
+        raise UploadError(
+            f"Image file too large: {file_size / 1024 / 1024:.2f}MB (max 10MB)",
+            details={"path": str(image_path), "size": file_size}
+        )
+
+    supported_formats = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.heic', '.heif', '.webp']
+    if image_path.suffix.lower() not in supported_formats:
+        raise UploadError(
+            f"Unsupported image format: {image_path.suffix}",
+            details={"path": str(image_path), "format": image_path.suffix}
+        )
+
+
+async def _find_file_input(frame: Frame, page: Page, timeout: int = 3000):
+    """Find a file input inside the frame or on the page."""
+    for selector in FILE_INPUT_SELECTORS:
+        try:
+            locator = frame.locator(selector)
+            if await locator.count() > 0:
+                await locator.first.wait_for(state="attached", timeout=timeout)
+                return locator.first
+        except Exception:
+            continue
+
+    for selector in FILE_INPUT_SELECTORS:
+        try:
+            locator = page.locator(selector)
+            if await locator.count() > 0:
+                await locator.first.wait_for(state="attached", timeout=timeout)
+                return locator.first
+        except Exception:
+            continue
+
+    return None
+
+
+async def _set_file_input_and_submit(
+    frame: Frame,
+    image_path: Path,
+    page: Optional[Page] = None,
+    wait_timeout: int = 3000,
+) -> None:
+    """Wait for file input and set input files."""
+    file_input = await _find_file_input(frame, page, timeout=wait_timeout)
+    if file_input is None:
+        raise ElementNotFoundError(
+            "File input not found after clicking image button",
+            details={"selectors": FILE_INPUT_SELECTORS}
+        )
+
+    await file_input.set_input_files(str(image_path.absolute()))
+    logger.info(f"File selected: {image_path}")
+
+
 @retry_on_error
 async def upload_image(
     page: Page,
@@ -184,29 +240,8 @@ async def upload_image(
         ElementNotFoundError: 필요한 요소를 찾을 수 없는 경우
     """
     try:
-        # 경로 검증
         image_path = Path(image_path)
-        if not image_path.exists():
-            raise UploadError(
-                f"Image file not found: {image_path}",
-                details={"path": str(image_path)}
-            )
-
-        # 파일 크기 확인 (10MB 제한)
-        file_size = image_path.stat().st_size
-        if file_size > 10 * 1024 * 1024:  # 10MB
-            raise UploadError(
-                f"Image file too large: {file_size / 1024 / 1024:.2f}MB (max 10MB)",
-                details={"path": str(image_path), "size": file_size}
-            )
-
-        # 포맷 검증
-        supported_formats = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.heic', '.heif', '.webp']
-        if image_path.suffix.lower() not in supported_formats:
-            raise UploadError(
-                f"Unsupported image format: {image_path.suffix}",
-                details={"path": str(image_path), "format": image_path.suffix}
-            )
+        _validate_image_path(image_path)
 
         logger.info(f"Uploading image: {image_path}")
 
@@ -223,24 +258,10 @@ async def upload_image(
             except:
                 pass
 
-        # 이미지 버튼 클릭
-        await click_image_button(frame)
+        # 이미지 버튼 클릭 -> 파일 input set -> 업로드 대기
+        await click_image_button(frame, page)
+        await _set_file_input_and_submit(frame, image_path, page=page)
 
-        # 파일 input 찾기
-        try:
-            file_input = frame.locator(FILE_INPUT_SELECTOR)
-            await file_input.wait_for(state="attached", timeout=3000)
-        except PlaywrightTimeoutError:
-            raise ElementNotFoundError(
-                "File input not found after clicking image button",
-                details={"selector": FILE_INPUT_SELECTOR}
-            )
-
-        # 파일 업로드
-        await file_input.set_input_files(str(image_path.absolute()))
-        logger.info(f"File selected: {image_path}")
-
-        # 업로드 완료 대기
         if wait_for_complete:
             await wait_for_upload_complete(
                 frame,
@@ -260,9 +281,10 @@ async def upload_image(
 
     except Exception as e:
         logger.error(f"Unexpected error during image upload: {e}", exc_info=True)
+        custom_error = await handle_playwright_error(e, page, "upload_image")
         raise UploadError(
-            f"Failed to upload image: {str(e)}",
-            details={"path": str(image_path), "error": str(e)}
+            f"Failed to upload image: {str(custom_error)}",
+            details={"path": str(image_path), "error": str(custom_error)}
         )
 
 
@@ -355,9 +377,10 @@ async def upload_base64_image(
 
     except Exception as e:
         logger.error(f"Unexpected error during base64 upload: {e}", exc_info=True)
+        custom_error = await handle_playwright_error(e, page, "upload_base64_image")
         raise UploadError(
-            f"Failed to upload base64 image: {str(e)}",
-            details={"error": str(e)}
+            f"Failed to upload base64 image: {str(custom_error)}",
+            details={"error": str(custom_error)}
         )
 
     finally:

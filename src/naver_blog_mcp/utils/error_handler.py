@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from playwright.async_api import Page, Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from .exceptions import (
     ElementNotFoundError,
@@ -20,16 +20,16 @@ logger = logging.getLogger(__name__)
 
 async def handle_playwright_error(
     error: Exception,
-    page: Page,
+    page: Optional[Page] = None,
     context: str = "unknown",
     save_screenshot: bool = True,
 ) -> Exception:
     """
-    Playwright 에러를 커스텀 에러로 변환하고 스크린샷을 저장합니다.
+    Playwright 에러를 커스텀 에러로 변환하고 스크린샷/HTML을 저장합니다.
 
     Args:
         error: 원본 Playwright 에러
-        page: Playwright Page 객체
+        page: Playwright Page 객체 (없을 수 있음)
         context: 에러 발생 컨텍스트 (예: "login", "post_write")
         save_screenshot: 스크린샷 저장 여부
 
@@ -41,14 +41,21 @@ async def handle_playwright_error(
 
     logger.error(f"Playwright error in {context}: {error_type} - {error_str}")
 
-    # 스크린샷 저장
+    # 스크린샷 및 HTML 저장
     screenshot_path = None
-    if save_screenshot:
+    page_html_path = None
+    if save_screenshot and page is not None:
         try:
             screenshot_path = await save_error_screenshot(page, context, error_type)
             logger.info(f"Screenshot saved: {screenshot_path}")
         except Exception as e:
             logger.warning(f"Failed to save screenshot: {e}")
+
+        try:
+            page_html_path = await save_page_html(page, context)
+            logger.info(f"Page HTML saved: {page_html_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save page HTML: {e}")
 
     # 에러 타입별 변환
     if isinstance(error, PlaywrightTimeoutError):
@@ -58,6 +65,7 @@ async def handle_playwright_error(
             details={
                 "context": context,
                 "screenshot": screenshot_path,
+                "page_html": page_html_path,
                 "original_error": error_str,
             }
         )
@@ -68,6 +76,7 @@ async def handle_playwright_error(
             details={
                 "context": context,
                 "screenshot": screenshot_path,
+                "page_html": page_html_path,
                 "original_error": error_str,
             }
         )
@@ -78,6 +87,7 @@ async def handle_playwright_error(
             details={
                 "context": context,
                 "screenshot": screenshot_path,
+                "page_html": page_html_path,
                 "original_error": error_str,
             }
         )
@@ -88,6 +98,7 @@ async def handle_playwright_error(
             details={
                 "context": context,
                 "screenshot": screenshot_path,
+                "page_html": page_html_path,
                 "original_error": error_str,
             }
         )
@@ -100,6 +111,7 @@ async def handle_playwright_error(
                 "context": context,
                 "error_type": error_type,
                 "screenshot": screenshot_path,
+                "page_html": page_html_path,
                 "original_error": error_str,
             }
         )

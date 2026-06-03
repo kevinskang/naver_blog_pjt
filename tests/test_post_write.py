@@ -7,15 +7,25 @@
 
 import asyncio
 import os
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
 # 프로젝트 루트 경로에서 .env 로드
 project_root = Path(__file__).parent.parent
 load_dotenv(project_root / ".env")
+
+
+def is_pstatic_reachable(timeout: int = 5) -> bool:
+    try:
+        with urllib.request.urlopen("https://feblog.pstatic.net", timeout=timeout):
+            return True
+    except Exception:
+        return False
 
 # 임포트 경로 추가
 import sys
@@ -42,6 +52,9 @@ async def test_post_write_full():
     user_id = os.getenv("NAVER_BLOG_ID")
     password = os.getenv("NAVER_BLOG_PASSWORD")
     headless = os.getenv("HEADLESS", "false").lower() == "true"
+
+    if not is_pstatic_reachable():
+        pytest.skip("pstatic.net is unreachable; Naver editor assets cannot be loaded in this environment.")
 
     if not user_id or not password:
         print("❌ .env 파일에 NAVER_BLOG_ID와 NAVER_BLOG_PASSWORD를 설정해주세요.")
@@ -114,15 +127,17 @@ async def test_post_write_full():
             try:
                 await page.screenshot(path="playwright-state/error_post_write.png")
                 print("   에러 스크린샷 저장: playwright-state/error_post_write.png")
-            except:
+            except Exception:
                 pass
 
         except Exception as e:
             print(f"\n❌ 예상치 못한 오류: {e}")
 
         finally:
-            await context.close()
-            await browser.close()
+            if 'context' in locals() and context is not None:
+                await context.close()
+            if 'browser' in locals() and browser is not None:
+                await browser.close()
 
 
 async def test_post_write_step_by_step():
@@ -134,6 +149,9 @@ async def test_post_write_step_by_step():
     user_id = os.getenv("NAVER_BLOG_ID")
     password = os.getenv("NAVER_BLOG_PASSWORD")
     headless = os.getenv("HEADLESS", "false").lower() == "true"
+
+    if not is_pstatic_reachable():
+        pytest.skip("pstatic.net is unreachable; Naver editor assets cannot be loaded in this environment.")
 
     if not user_id or not password:
         print("❌ .env 파일에 NAVER_BLOG_ID와 NAVER_BLOG_PASSWORD를 설정해주세요.")
@@ -185,8 +203,10 @@ async def test_post_write_step_by_step():
             print(f"\n❌ 단계별 테스트 실패: {e}")
 
         finally:
-            await context.close()
-            await browser.close()
+            if 'context' in locals() and context is not None:
+                await context.close()
+            if 'browser' in locals() and browser is not None:
+                await browser.close()
 
 
 async def main():

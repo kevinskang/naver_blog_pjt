@@ -21,7 +21,8 @@
       "Bash(findstr:*)",
       "Bash(uv add:*)",
       "Bash(claude mcp *)",
-      "Bash(python3 -m json.tool)"
+      "Bash(python3 -m json.tool)",
+      "Bash(git *)"
     ],
     "deny": [],
     "ask": []

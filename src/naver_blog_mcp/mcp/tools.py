@@ -17,11 +17,21 @@ from ..utils.exceptions import NaverBlogError, UploadError
 
 logger = logging.getLogger(__name__)
 
+
+def build_tool_metadata(name: str, description: str, input_schema: dict) -> dict:
+    return {
+        "name": name,
+        "description": description,
+        "inputSchema": input_schema,
+        "input_schema": input_schema,
+    }
+
+
 TOOLS_METADATA = {
-    "naver_blog_create_post": {
-        "name": "naver_blog_create_post",
-        "description": "네이버 블로그에 새 글을 작성합니다. 이미지 첨부도 지원합니다.",
-        "inputSchema": {
+    "naver_blog_create_post": build_tool_metadata(
+        "naver_blog_create_post",
+        "네이버 블로그에 새 글을 작성합니다. 이미지 첨부도 지원합니다.",
+        {
             "type": "object",
             "properties": {
                 "title": {
@@ -54,12 +64,12 @@ TOOLS_METADATA = {
             },
             "required": ["title", "content"],
         },
-    },
+    ),
     # NOTE: 글 삭제 기능은 일단 비활성화 (필요시 추후 구현)
-    # "naver_blog_delete_post": {
-    #     "name": "naver_blog_delete_post",
-    #     "description": "네이버 블로그의 글을 삭제합니다.",
-    #     "inputSchema": {
+    # "naver_blog_delete_post": build_tool_metadata(
+    #     "naver_blog_delete_post",
+    #     "네이버 블로그의 글을 삭제합니다.",
+    #     {
     #         "type": "object",
     #         "properties": {
     #             "post_url": {
@@ -69,16 +79,16 @@ TOOLS_METADATA = {
     #         },
     #         "required": ["post_url"],
     #     },
-    # },
-    "naver_blog_list_categories": {
-        "name": "naver_blog_list_categories",
-        "description": "네이버 블로그의 카테고리 목록을 가져옵니다.",
-        "inputSchema": {
+    # ),
+    "naver_blog_list_categories": build_tool_metadata(
+        "naver_blog_list_categories",
+        "네이버 블로그의 카테고리 목록을 가져옵니다.",
+        {
             "type": "object",
             "properties": {},
             "required": [],
         },
-    },
+    ),
 }
 
 
@@ -260,9 +270,10 @@ async def handle_list_categories(page: Page) -> Dict[str, Any]:
         return result
 
     except Exception as e:
-        logger.error(f"카테고리 조회 중 예외 발생: {e}", exc_info=True)
+        custom_error = await handle_playwright_error(e, page, "list_categories")
+        logger.error(f"카테고리 조회 중 예외 발생: {custom_error}", exc_info=True)
         return {
             "success": False,
-            "message": f"카테고리 조회 실패: {str(e)}",
+            "message": f"카테고리 조회 실패: {str(custom_error)}",
             "categories": []
         }

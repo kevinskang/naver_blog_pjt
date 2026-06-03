@@ -7,8 +7,9 @@ from typing import Optional
 
 from playwright.async_api import Browser, BrowserContext
 
-from ..automation.login import login_to_naver, verify_login_session, NaverLoginError
+from ..automation.login import login_to_naver, verify_login_session
 from ..config import get_context_config
+from ..utils.exceptions import LoginError
 
 
 class SessionManager:
@@ -93,7 +94,7 @@ class SessionManager:
             BrowserContext 객체
 
         Raises:
-            NaverLoginError: 로그인 실패 시
+            LoginError: 로그인 실패 시
         """
         # 1. 기존 세션 파일이 있고 유효하면 재사용
         if self.is_session_file_valid():
@@ -132,7 +133,7 @@ class SessionManager:
 
             return context
 
-        except NaverLoginError as e:
+        except LoginError as e:
             await context.close()
             raise e
         finally:

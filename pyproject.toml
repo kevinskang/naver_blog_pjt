@@ -44,7 +44,14 @@ target-version = ['py313']
 [tool.ruff]
 line-length = 88
 target-version = "py313"
+# ruff rules: enable common checks, ignore project-specific false positives as needed
+select = ["E", "F", "I", "B", "C", "S"]
+extend-ignore = ["E203"]
 
 [tool.mypy]
 python_version = "3.13"
 strict = true
+
+[tool.isort]
+profile = "black"
+line_length = 88

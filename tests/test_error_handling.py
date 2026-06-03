@@ -3,6 +3,8 @@
 import asyncio
 import sys
 
+import pytest
+
 sys.path.insert(0, "src")
 
 from naver_blog_mcp.utils.exceptions import (
@@ -11,7 +13,11 @@ from naver_blog_mcp.utils.exceptions import (
     NetworkError,
     ElementNotFoundError,
 )
-from naver_blog_mcp.utils.error_handler import is_retryable_error, should_use_alternative_selector
+from naver_blog_mcp.utils.error_handler import (
+    handle_playwright_error,
+    is_retryable_error,
+    should_use_alternative_selector,
+)
 from naver_blog_mcp.utils.retry import retry_on_error
 
 
@@ -91,6 +97,42 @@ def test_error_classification():
         print(f"✅ {type(error).__name__}은 대체 셀렉터 사용")
 
     print()
+
+
+@pytest.mark.asyncio
+async def test_handle_playwright_error_converts_exception_and_records_debug_artifacts(monkeypatch):
+    saved = {}
+
+    async def fake_save_error_screenshot(page, context, error_type):
+        saved["screenshot"] = f"{context}_{error_type}.png"
+        return saved["screenshot"]
+
+    async def fake_save_page_html(page, context):
+        saved["page_html"] = f"{context}.html"
+        return saved["page_html"]
+
+    monkeypatch.setattr(
+        "naver_blog_mcp.utils.error_handler.save_error_screenshot",
+        fake_save_error_screenshot,
+    )
+    monkeypatch.setattr(
+        "naver_blog_mcp.utils.error_handler.save_page_html",
+        fake_save_page_html,
+    )
+
+    class DummyPage:
+        pass
+
+    error = ValueError("test error")
+    custom_error = await handle_playwright_error(error, DummyPage(), "test_context")
+
+    assert isinstance(custom_error, NaverBlogError)
+    assert "test error" in str(custom_error)
+    assert custom_error.details["context"] == "test_context"
+    assert custom_error.details["screenshot"] == "test_context_ValueError.png"
+    assert custom_error.details["page_html"] == "test_context.html"
+
+    print("✅ handle_playwright_error 테스트 통과")
 
 
 async def test_retry_decorator():
