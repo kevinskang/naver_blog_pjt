@@ -218,6 +218,28 @@ naver-blog-mcp/
 #### 2. Tool 메타데이터 정의
 - ✅ `src/naver_blog_mcp/mcp/tools.py` 생성
 - ✅ **Tool 스키마 정의**
+
+---
+
+## 📅 Recent update
+2026-06-05
+
+### 작업 내용
+- ✅ `playwright install chromium` 실행 완료
+- ✅ `src/naver_blog_mcp/utils/selector_helper.py`의 `wait_for_any_selector` 버그 수정
+- ✅ `src/naver_blog_mcp/automation/image_upload.py` 파일 입력 처리 개선
+- ✅ `src/naver_blog_mcp/services/session_manager.py`에 Playwright stealth init script 추가
+- ✅ `src/naver_blog_mcp/server.py` 중복 정의된 `get_page()` 제거
+- ✅ `python -m py_compile` 및 `pytest -q tests/test_error_handling.py tests/test_iframe_helper.py tests/test_image_upload_helpers.py` 통과
+
+### 검증 결과
+- **단위 테스트(로그인 제외)**: 11개 통과
+- **통합 테스트(네이버 로그인 필요)**: `tests/test_server.py`, `tests/test_tools.py` 실패
+
+### 문제 현황
+- 현재 환경에서 네이버 로그인 시 CAPTCHA가 발생하고 있어 자동 로그인이 불가능합니다.
+- `HEADLESS` 또는 브라우저 stealth 설정을 조정해도 사이트 측에서 자동화를 차단하고 있습니다.
+- 이 문제 해결에는 수동 CAPTCHA 처리 또는 정상 세션 재사용이 필요합니다.
   - `naver_blog_create_post` - 글 작성 Tool
   - `naver_blog_delete_post` - 글 삭제 Tool
   - `naver_blog_list_categories` - 카테고리 목록 Tool

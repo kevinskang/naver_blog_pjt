@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -35,6 +34,10 @@ class Config:
     BROWSER_ARGS: list[str] = [
         "--disable-blink-features=AutomationControlled",
         "--disable-dev-shm-usage",
+        "--disable-infobars",
+        "--window-size=1920,1080",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
     ]
 
     USER_AGENT: str = (

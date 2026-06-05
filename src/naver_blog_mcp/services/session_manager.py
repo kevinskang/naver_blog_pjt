@@ -1,6 +1,5 @@
 """네이버 블로그 세션 관리자."""
 
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -8,8 +7,44 @@ from typing import Optional
 from playwright.async_api import Browser, BrowserContext
 
 from ..automation.login import login_to_naver, verify_login_session
-from ..config import get_context_config
+from ..config import config, get_context_config
 from ..utils.exceptions import LoginError
+
+STEALTH_SCRIPT = r"""
+Object.defineProperty(navigator, 'webdriver', {
+    get: () => false,
+});
+Object.defineProperty(navigator, 'plugins', {
+    get: () => [1, 2, 3, 4, 5],
+});
+Object.defineProperty(navigator, 'languages', {
+    get: () => ['ko-KR', 'ko'],
+});
+Object.defineProperty(navigator, 'userAgentData', {
+    get: () => ({
+        brands: [
+            { brand: 'Chromium', version: '148' },
+            { brand: 'Google Chrome', version: '148' },
+        ],
+        mobile: false,
+        platform: 'Linux',
+        getHighEntropyValues: async () => ({
+            architecture: 'x86',
+            model: '',
+            platform: 'Linux',
+            platformVersion: '10.0.0',
+            uaFullVersion: '148.0.0.0',
+            fullVersionList: [
+                { brand: 'Chromium', version: '148.0.0.0' },
+                { brand: 'Google Chrome', version: '148.0.0.0' },
+            ],
+        }),
+    }),
+});
+window.chrome = {
+    runtime: {},
+};
+"""
 
 
 class SessionManager:
@@ -19,8 +54,8 @@ class SessionManager:
         self,
         user_id: str,
         password: str,
-        storage_path: str = "playwright-state/auth.json",
-        session_validity_hours: int = 24,
+        storage_path: str = config.SESSION_STORAGE_PATH,
+        session_validity_hours: int = config.SESSION_VALIDITY_HOURS,
     ):
         """
         세션 매니저 초기화.
@@ -103,6 +138,7 @@ class SessionManager:
                     storage_state=self.storage_path,
                     **get_context_config(),
                 )
+                await self._apply_stealth_scripts(context)
 
                 # 실제 로그인 상태 확인
                 if await self.is_session_valid(context):
@@ -116,6 +152,7 @@ class SessionManager:
 
         # 2. 새로 로그인
         context = await browser.new_context(**get_context_config())
+        await self._apply_stealth_scripts(context)
         page = await context.new_page()
 
         try:
@@ -138,6 +175,12 @@ class SessionManager:
             raise e
         finally:
             await page.close()
+
+    async def _apply_stealth_scripts(self, context: BrowserContext) -> None:
+        """
+        브라우저 컨텍스트에 자동화 탐지를 회피하기 위한 초기 스크립트를 추가합니다.
+        """
+        await context.add_init_script(STEALTH_SCRIPT)
 
     async def refresh_session_if_needed(
         self, browser: Browser, context: BrowserContext, headless: bool = True

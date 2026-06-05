@@ -1,9 +1,10 @@
 """셀렉터 헬퍼 유틸리티."""
 
 import logging
-from typing import Optional, Union, List
+from typing import List, Optional, Union
 
-from playwright.async_api import Page, Locator, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import Locator, Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .exceptions import ElementNotFoundError
 
@@ -147,34 +148,16 @@ async def wait_for_any_selector(
     if isinstance(selectors, str):
         selectors = [selectors]
 
-    import asyncio
 
-    # 각 셀렉터에 대해 비동기로 대기
-    tasks = []
+    # 각 셀렉터를 순차적으로 검사합니다.
     for selector in selectors:
-        async def wait_for_selector(sel):
-            try:
-                locator = page.locator(sel)
-                await locator.wait_for(state=state, timeout=timeout)
-                return locator.first
-            except:
-                return None
-
-        tasks.append(wait_for_selector(selector))
-
-    # 첫 번째로 완료되는 것을 반환
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-
-    # 나머지 취소
-    for task in pending:
-        task.cancel()
-
-    # 결과 확인
-    for task in done:
-        result = task.result()
-        if result:
-            logger.info(f"Found element with one of the selectors in {context}")
-            return result
+        try:
+            locator = page.locator(selector).first
+            await locator.wait_for(state=state, timeout=timeout)
+            logger.info(f"Found element with selector in {context}: {selector}")
+            return locator
+        except Exception:
+            continue
 
     # 모든 셀렉터 실패
     raise ElementNotFoundError(

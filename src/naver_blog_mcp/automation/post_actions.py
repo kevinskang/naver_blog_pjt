@@ -2,23 +2,20 @@
 
 import asyncio
 import logging
-from typing import Optional, Dict, Any
-from pathlib import Path
+from typing import Any, Dict, Optional
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from .selectors import (
-    POST_WRITE_TITLE,
-    POST_WRITE_CONTENT_FRAME,
-    POST_WRITE_CONTENT_BODY,
-    POST_WRITE_PUBLISH_BTN,
-    POST_WRITE_CATEGORY_BTN,
-    POST_WRITE_TAG_INPUT,
-)
 from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import PostError
 from ..utils.iframe_helper import get_editor_frame
-
+from ..utils.selector_helper import find_element_with_alternatives
+from .selectors import (
+    POST_WRITE_CONTENT_BODY,
+    POST_WRITE_PUBLISH_BTN,
+    POST_WRITE_TITLE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,71 +88,61 @@ async def _fill_tags(page: Page, tags: list) -> bool:
 
 async def _close_page_popups(page: Page) -> None:
     """Close common popups on the page to ensure editor is accessible."""
-    try:
-        popup_close_selectors = [
-            "button.se-popup-button-cancel",
-            "button:has-text('닫기')",
-            "button:has-text('확인')",
-            "button.se-popup-close",
-            ".se-popup-dim",
-        ]
-        for sel in popup_close_selectors:
-            try:
-                count = await page.locator(sel).count()
-                if count > 0:
-                    await page.locator(sel).first.click(timeout=2000)
-                    await asyncio.sleep(0.3)
-            except Exception:
-                continue
-    except Exception:
-        pass
+    popup_close_selectors = [
+        "button.se-popup-button-cancel",
+        "button:has-text('닫기')",
+        "button:has-text('확인')",
+        "button.se-popup-close",
+        ".se-popup-dim",
+    ]
+
+    for sel in popup_close_selectors:
+        try:
+            locator = page.locator(sel)
+            if await locator.count() > 0:
+                await locator.first.click(timeout=2000)
+        except Exception:
+            continue
 
 
 async def _type_content_in_iframe(iframe, content: str) -> bool:
     """Type content into iframe's contenteditable body selectors."""
-    try:
-        body_selectors = POST_WRITE_CONTENT_BODY if isinstance(POST_WRITE_CONTENT_BODY, list) else [POST_WRITE_CONTENT_BODY]
-        for body_selector in body_selectors:
-            try:
-                content_body = await iframe.wait_for_selector(body_selector, timeout=3000)
-                if content_body:
-                    await content_body.click()
-                    await asyncio.sleep(0.5)
-                    await content_body.type(content, delay=10)
-                    logger.info(f"본문 입력 완료 (iframe 방식, selector: {body_selector})")
-                    return True
-            except Exception:
-                continue
-    except Exception:
-        pass
+    body_selectors = POST_WRITE_CONTENT_BODY if isinstance(POST_WRITE_CONTENT_BODY, list) else [POST_WRITE_CONTENT_BODY]
+
+    for body_selector in body_selectors:
+        try:
+            content_body = await iframe.wait_for_selector(body_selector, timeout=5000)
+            if content_body:
+                await content_body.click()
+                await content_body.fill(content)
+                logger.info(f"본문 입력 완료 (iframe 방식, selector: {body_selector})")
+                return True
+        except Exception:
+            continue
+
     return False
 
 
 async def _type_content_direct(page: Page, content: str) -> bool:
     """Type content directly into contenteditable on the main page."""
-    try:
-        content_selectors = [
-            "div[contenteditable='true']:not([data-placeholder='제목'])",
-            "div[contenteditable='true'][role='textbox']",
-            "div.se-component",
-            "div:has-text('글감과 함께')",
-        ]
-        for selector in content_selectors:
-            try:
-                element_count = await page.locator(selector).count()
-                if element_count > 0:
-                    element = page.locator(selector).first
-                    await element.click()
-                    await asyncio.sleep(0.5)
-                    await page.keyboard.press("Control+A")
-                    await asyncio.sleep(0.2)
-                    await page.keyboard.type(content, delay=10)
-                    logger.info(f"본문 입력 완료 (직접 방식, selector: {selector})")
-                    return True
-            except Exception:
-                continue
-    except Exception:
-        pass
+    content_selectors = [
+        "div[contenteditable='true']:not([data-placeholder='제목'])",
+        "div[contenteditable='true'][role='textbox']",
+        "div.se-component",
+        "div:has-text('글감과 함께')",
+    ]
+
+    for selector in content_selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() > 0:
+                await locator.click()
+                await locator.fill(content)
+                logger.info(f"본문 입력 완료 (직접 방식, selector: {selector})")
+                return True
+        except Exception:
+            continue
+
     return False
 
 
@@ -182,9 +169,7 @@ async def navigate_to_post_write_page(
             url = f"https://blog.naver.com/{blog_id}/postwrite"
         else:
             # 방법 2: 블로그 메인에서 글쓰기 버튼 찾아서 클릭
-            # 먼저 블로그 메인으로 이동
-            await page.goto("https://blog.naver.com", wait_until="load", timeout=timeout)
-            await asyncio.sleep(2)
+            await page.goto("https://blog.naver.com", wait_until="networkidle", timeout=timeout)
 
             # 글쓰기 버튼 찾기 (여러 셀렉터 시도)
             write_btn_selectors = [
@@ -217,17 +202,18 @@ async def navigate_to_post_write_page(
                 url = "https://blog.naver.com/postwrite"
                 print(f"   글쓰기 버튼을 찾지 못했습니다. 기본 URL 사용: {url}")
 
-        await page.goto(url, wait_until="load", timeout=timeout)
-        await asyncio.sleep(3)  # 에디터 로딩 충분히 대기
+        await page.goto(url, wait_until="networkidle", timeout=timeout)
 
         # 글쓰기 페이지인지 확인
         current_url = page.url
-        print(f"   현재 URL: {current_url}")
+        logger.info(f"현재 URL: {current_url}")
 
         # URL에 postwrite, PostWriteForm, Redirect=Write가 포함되어 있으면 성공으로 간주
-        if ("postwrite" in current_url.lower() or
-            "PostWriteForm" in current_url or
-            "Redirect=Write" in current_url):
+        if (
+            "postwrite" in current_url.lower()
+            or "PostWriteForm" in current_url
+            or "Redirect=Write" in current_url
+        ):
             logger.info(f"글쓰기 페이지로 이동: {current_url}")
             return
 
@@ -251,11 +237,11 @@ async def navigate_to_post_write_page(
         raise NaverBlogPostError(f"글쓰기 페이지 로딩에 실패했습니다. 현재 URL: {current_url}")
 
     except PlaywrightTimeout as e:
-        raise NaverBlogPostError(f"글쓰기 페이지 이동 시간 초과: {str(e)}")
+        raise NaverBlogPostError(f"글쓰기 페이지 이동 시간 초과: {str(e)}") from e
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise NaverBlogPostError(f"글쓰기 페이지 이동 중 오류: {str(e)}")
+        raise NaverBlogPostError(f"글쓰기 페이지 이동 중 오류: {str(e)}") from e
 
 
 async def fill_post_title(page: Page, title: str) -> None:
@@ -273,65 +259,51 @@ async def fill_post_title(page: Page, title: str) -> None:
         # 제목 입력란 찾기 (대체 셀렉터 시도)
         title_filled = False
 
-        # 방법 1: 일반적인 셀렉터 시도
-        if isinstance(POST_WRITE_TITLE, list):
-            for selector in POST_WRITE_TITLE:
-                try:
-                    element_count = await page.locator(selector).count()
-                    if element_count > 0:
-                        # contenteditable div는 fill 대신 type 사용
-                        element = page.locator(selector).first
+        try:
+            locator = await find_element_with_alternatives(
+                page,
+                POST_WRITE_TITLE,
+                timeout=5000,
+                context="title_input",
+            )
+            is_contenteditable = await locator.get_attribute("contenteditable")
+            await locator.click()
+            if is_contenteditable:
+                await locator.type(title, delay=50)
+            else:
+                await locator.fill(title)
+            title_filled = True
+            logger.info(f"제목 입력 완료: {title}")
+        except Exception as e:
+            logger.debug(f"제목 입력 대체 셀렉터 실패: {e}")
 
-                        # contenteditable인지 확인
-                        is_contenteditable = await element.get_attribute("contenteditable")
-
-                        if is_contenteditable:
-                            # contenteditable div: 클릭 후 타이핑
-                            await element.click()
-                            await asyncio.sleep(0.3)
-                            await element.type(title, delay=50)
-                        else:
-                            # 일반 input: fill 사용
-                            await element.fill(title)
-
-                        title_filled = True
-                        logger.info(f"제목 입력 완료: {title} (selector: {selector})")
-                        break
-                except Exception as e:
-                    print(f"   셀렉터 {selector} 실패: {e}")
-                    continue
-
-        # 방법 2: 제목 영역을 직접 클릭 (좌표 기반)
         if not title_filled:
             try:
-                # 제목 영역 대략적인 위치 클릭 (상단 중앙)
                 await page.mouse.click(450, 250)
-                await asyncio.sleep(0.5)
                 await page.keyboard.type(title, delay=50)
                 title_filled = True
                 logger.info(f"제목 입력 완료 (클릭 방식): {title}")
             except Exception as e:
-                print(f"   클릭 방식 실패: {e}")
+                logger.debug(f"제목 클릭 방식 실패: {e}")
 
-        # 방법 3: Tab 키로 이동
         if not title_filled:
             try:
-                # 페이지 최상단으로 포커스 이동 후 Tab으로 제목까지 이동
                 await page.keyboard.press("Tab")
-                await asyncio.sleep(0.3)
                 await page.keyboard.type(title, delay=50)
                 title_filled = True
                 logger.info(f"제목 입력 완료 (Tab 방식): {title}")
             except Exception as e:
-                print(f"   Tab 방식 실패: {e}")
+                logger.debug(f"제목 Tab 방식 실패: {e}")
 
         if not title_filled:
             raise NaverBlogPostError("제목 입력란을 찾을 수 없습니다.")
 
         await asyncio.sleep(0.5)
 
+    except NaverBlogPostError:
+        raise
     except Exception as e:
-        raise NaverBlogPostError(f"제목 입력 중 오류: {str(e)}")
+        raise NaverBlogPostError(f"제목 입력 중 오류: {str(e)}") from e
 
 
 async def fill_post_content(page: Page, content: str, use_html: bool = False) -> None:
@@ -379,9 +351,9 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
         await asyncio.sleep(1)
 
     except PlaywrightTimeout as e:
-        raise NaverBlogPostError(f"본문 입력 시간 초과: {str(e)}")
+        raise NaverBlogPostError(f"본문 입력 시간 초과: {str(e)}") from e
     except Exception as e:
-        raise NaverBlogPostError(f"본문 입력 중 오류: {str(e)}")
+        raise NaverBlogPostError(f"본문 입력 중 오류: {str(e)}") from e
 
 
 async def publish_post(
@@ -595,8 +567,8 @@ async def publish_post(
                 else:
                     raise NaverBlogPostError("발행 후 페이지 이동에 실패했습니다.")
 
-            except PlaywrightTimeout:
-                raise NaverBlogPostError("발행 완료 대기 시간 초과")
+            except PlaywrightTimeout as e:
+                raise NaverBlogPostError("발행 완료 대기 시간 초과") from e
         else:
             return {
                 "success": True,
@@ -606,7 +578,7 @@ async def publish_post(
 
     except Exception as e:
         custom_error = await handle_playwright_error(e, page, "publish_post")
-        raise NaverBlogPostError(f"발행 중 오류: {str(custom_error)}")
+        raise NaverBlogPostError(f"발행 중 오류: {str(custom_error)}") from e
 
 
 async def create_blog_post(
@@ -664,4 +636,4 @@ async def create_blog_post(
         raise
     except Exception as e:
         custom_error = await handle_playwright_error(e, page, "create_blog_post")
-        raise NaverBlogPostError(f"글 작성 중 오류: {str(custom_error)}")
+        raise NaverBlogPostError(f"글 작성 중 오류: {str(custom_error)}") from e

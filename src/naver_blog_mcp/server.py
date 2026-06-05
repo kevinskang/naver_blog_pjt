@@ -5,23 +5,23 @@ MCP (Model Context Protocol) 서버를 제공합니다.
 """
 
 import asyncio
+import json
 import logging
-import os
 from typing import Optional
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
-from .config import get_browser_config, config
-from .services.session_manager import SessionManager
+from .config import config, get_browser_config
 from .mcp.tools import (
     TOOLS_METADATA,
     handle_create_post,
     # handle_delete_post,  # 비활성화
     handle_list_categories,
 )
+from .services.session_manager import SessionManager
 from .utils.trace_manager import trace_manager
 
 # 로깅 설정
@@ -55,88 +55,92 @@ class NaverBlogMCPServer:
         """MCP Tool들을 등록합니다."""
         logger.info("Registering MCP tools...")
 
-        # naver_blog_create_post Tool 등록
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict) -> list[dict]:
             """Tool 호출 핸들러."""
-            logger.info(f"Tool called: {name} with arguments: {arguments}")
+            logger.info(f"Tool called: {name} with keys: {list(arguments.keys())}")
+            return await self._handle_tool_call(name, arguments)
 
-            try:
-                # Trace 시작
-                if self.context:
-                    await trace_manager.start_trace(self.context, name=name)
-
-                # 페이지 가져오기
-                page = await self.get_page()
-
-                # Tool별 핸들러 호출
-                if name == "naver_blog_create_post":
-                    result = await handle_create_post(
-                        page=page,
-                        title=arguments["title"],
-                        content=arguments["content"],
-                        category=arguments.get("category"),
-                        tags=arguments.get("tags"),
-                        images=arguments.get("images"),
-                        publish=arguments.get("publish", True),
-                    )
-                # elif name == "naver_blog_delete_post":
-                #     result = await handle_delete_post(
-                #         page=page, post_url=arguments["post_url"]
-                #     )
-                elif name == "naver_blog_list_categories":
-                    result = await handle_list_categories(page=page)
-                else:
-                    return [
-                        {
-                            "type": "text",
-                            "text": f"알 수 없는 Tool: {name}",
-                        }
-                    ]
-
-                # Trace 저장 (성공)
-                if self.context:
-                    await trace_manager.stop_trace(self.context, success=True)
-
-                # 결과를 MCP 형식으로 변환
-                import json
-
-                return [
-                    {
-                        "type": "text",
-                        "text": json.dumps(result, ensure_ascii=False, indent=2),
-                    }
-                ]
-
-            except Exception as e:
-                logger.error(f"Tool execution error: {e}", exc_info=True)
-
-                # Trace 저장 (실패)
-                if self.context:
-                    await trace_manager.stop_trace(self.context, success=False)
-
-                return [
-                    {
-                        "type": "text",
-                        "text": f"오류 발생: {str(e)}",
-                    }
-                ]
-
-        # list_tools 핸들러 등록
         @self.server.list_tools()
         async def list_tools() -> list[Tool]:
             """사용 가능한 Tool 목록을 반환합니다."""
-            # dict를 Tool 객체로 변환
             return [
                 Tool(
                     name=tool_data["name"],
                     description=tool_data["description"],
-                    inputSchema=tool_data["inputSchema"]
+                    inputSchema=tool_data["inputSchema"],
                 )
                 for tool_data in TOOLS_METADATA.values()
             ]
 
         logger.info(f"Registered {len(TOOLS_METADATA)} tools")
+
+    async def _handle_tool_call(self, name: str, arguments: dict) -> list[dict]:
+        """툴 호출을 처리하고 결과를 MCP 메시지로 변환합니다."""
+        try:
+            await self._ensure_session()
+
+            if self.context:
+                await trace_manager.start_trace(self.context, name=name)
+
+            page = await self.get_page()
+            result = await self._execute_tool(name, arguments, page)
+
+            if self.context:
+                await trace_manager.stop_trace(self.context, success=True)
+
+            return [
+                {
+                    "type": "text",
+                    "text": json.dumps(result, ensure_ascii=False, indent=2),
+                }
+            ]
+
+        except Exception as e:
+            logger.error(f"Tool execution error: {e}", exc_info=True)
+            if self.context:
+                await trace_manager.stop_trace(self.context, success=False)
+            return [
+                {
+                    "type": "text",
+                    "text": f"오류 발생: {str(e)}",
+                }
+            ]
+
+    async def _execute_tool(self, name: str, arguments: dict, page: Page) -> dict:
+        """Tool 이름에 따라 적절한 핸들러를 호출합니다."""
+        if name == "naver_blog_create_post":
+            return await handle_create_post(
+                page=page,
+                title=arguments["title"],
+                content=arguments["content"],
+                category=arguments.get("category"),
+                tags=arguments.get("tags"),
+                images=arguments.get("images"),
+                publish=arguments.get("publish", True),
+            )
+        # elif name == "naver_blog_delete_post":
+        #     return await handle_delete_post(page=page, post_url=arguments["post_url"])
+        elif name == "naver_blog_list_categories":
+            return await handle_list_categories(page=page)
+
+        raise ValueError(f"알 수 없는 Tool: {name}")
+
+    async def _ensure_session(self) -> None:
+        """세션이 없거나 만료된 경우 재로그인 시도합니다."""
+        if not self.context:
+            logger.info("세션 없음 — 로그인 재시도 중...")
+            if not await self._try_init_session():
+                raise RuntimeError(
+                    "네이버 로그인에 실패했습니다. "
+                    ".env 파일의 NAVER_BLOG_ID, NAVER_BLOG_PASSWORD를 확인하거나 "
+                    "HEADLESS=false로 설정 후 CAPTCHA를 수동으로 처리해주세요."
+                )
+        else:
+            # 이미 context가 있어도 만료되었을 수 있으므로 검증
+            self.context = await self.session_manager.refresh_session_if_needed(
+                self.browser, self.context, headless=config.HEADLESS
+            )
 
     async def initialize(self):
         """브라우저를 실행합니다. 로그인은 첫 Tool 호출 시점에 수행됩니다."""

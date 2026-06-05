@@ -5,14 +5,15 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from playwright.async_api import Page, BrowserContext, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from ..utils.error_handler import handle_playwright_error
-from ..utils.exceptions import LoginError, CaptchaDetectedError, InvalidCredentialsError
+from ..utils.exceptions import CaptchaDetectedError, InvalidCredentialsError, LoginError
 
 logger = logging.getLogger(__name__)
 
-from .selectors import LOGIN_ID_INPUT, LOGIN_PW_INPUT, LOGIN_BTN
+from .selectors import LOGIN_BTN, LOGIN_ID_INPUT, LOGIN_PW_INPUT
 
 
 async def login_to_naver(
@@ -54,17 +55,22 @@ async def login_to_naver(
         await asyncio.sleep(1)  # 페이지 로딩 대기
 
         # 2. 아이디 입력
+        await page.click(LOGIN_ID_INPUT)
         await page.fill(LOGIN_ID_INPUT, user_id)
-        await asyncio.sleep(0.5)  # 자연스러운 타이핑 시뮬레이션
+        await page.dispatch_event(LOGIN_ID_INPUT, "input")
+        await page.dispatch_event(LOGIN_ID_INPUT, "change")
+        await asyncio.sleep(1)  # 페이지 로딩 대기
 
         # 3. 비밀번호 입력
+        await page.click(LOGIN_PW_INPUT)
         await page.fill(LOGIN_PW_INPUT, password)
+        await page.dispatch_event(LOGIN_PW_INPUT, "input")
+        await page.dispatch_event(LOGIN_PW_INPUT, "change")
         await asyncio.sleep(0.5)
 
         # 4. 로그인 버튼 클릭
         # 대체 셀렉터 시도
         login_clicked = False
-        navigation_waiter = page.wait_for_navigation(wait_until="networkidle", timeout=10000)
         if isinstance(LOGIN_BTN, list):
             for selector in LOGIN_BTN:
                 try:
@@ -83,19 +89,20 @@ async def login_to_naver(
         # 5. 로그인 완료 대기 (네이버 메인 페이지 또는 에러 메시지)
         try:
             try:
-                await navigation_waiter
+                await page.wait_for_load_state("networkidle", timeout=10000)
             except PlaywrightTimeout:
                 pass
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
+                await page.wait_for_load_state("load", timeout=10000)
             except PlaywrightTimeout:
                 pass
 
             current_url = page.url
             if "nid.naver.com" in current_url:
                 # CAPTCHA 확인
-                captcha_element = await page.locator("iframe[src*='captcha']").count()
-                if captcha_element > 0:
+                captcha_frame_count = await page.locator("iframe[src*='captcha']").count()
+                captcha_img_visible = await page.locator("#rcapt").is_visible() or await page.locator("#captchaimg").is_visible()
+                if captcha_frame_count > 0 or captcha_img_visible:
                     if not headless:
                         await _wait_for_captcha_manual(page)
                     else:
@@ -114,7 +121,7 @@ async def login_to_naver(
                 for selector in login_error_selectors:
                     try:
                         error_msg_element = page.locator(selector).first
-                        if await error_msg_element.count() > 0:
+                        if await error_msg_element.count() > 0 and await error_msg_element.is_visible():
                             text = await error_msg_element.text_content()
                             if text and text.strip():
                                 error_msg = text.strip()
@@ -130,7 +137,7 @@ async def login_to_naver(
 
         # 6. 세션 저장
         Path(storage_state_path).parent.mkdir(parents=True, exist_ok=True)
-        storage_state = await page.context.storage_state(path=storage_state_path)
+        await page.context.storage_state(path=storage_state_path)
 
         # 7. 블로그 페이지로 이동하여 로그인 확인
         await page.goto("https://blog.naver.com", wait_until="load")
@@ -169,10 +176,10 @@ async def login_to_naver(
     except InvalidCredentialsError:
         raise
     except PlaywrightTimeout as e:
-        raise LoginError(f"로그인 시간 초과: {str(e)}")
+        raise LoginError(f"로그인 시간 초과: {str(e)}") from e
     except Exception as e:
         custom_error = await handle_playwright_error(e, page, "login")
-        raise LoginError(f"로그인 중 오류 발생: {str(custom_error)}")
+        raise LoginError(f"로그인 중 오류 발생: {str(custom_error)}") from e
 
 
 async def _wait_for_captcha_manual(page: Page, timeout: int = 60000) -> None:
@@ -197,8 +204,8 @@ async def _wait_for_captcha_manual(page: Page, timeout: int = 60000) -> None:
         )
         logger.info("CAPTCHA 해결 완료!")
         await asyncio.sleep(2)  # 추가 대기
-    except PlaywrightTimeout:
-        raise LoginError("CAPTCHA 해결 시간 초과")
+    except PlaywrightTimeout as e:
+        raise LoginError("CAPTCHA 해결 시간 초과") from e
 
 
 async def verify_login_session(page: Page) -> bool:
@@ -246,4 +253,4 @@ async def logout_from_naver(page: Page) -> None:
         await asyncio.sleep(1)
     except Exception as e:
         custom_error = await handle_playwright_error(e, page, "logout")
-        raise LoginError(f"로그아웃 중 오류 발생: {str(custom_error)}")
+        raise LoginError(f"로그아웃 중 오류 발생: {str(custom_error)}") from e

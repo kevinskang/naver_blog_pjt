@@ -5,7 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .exceptions import (
     ElementNotFoundError,

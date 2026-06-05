@@ -4,16 +4,16 @@
 """
 
 import logging
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from playwright.async_api import Page
 
-from ..automation.post_actions import create_blog_post, NaverBlogPostError
-from ..automation.image_upload import upload_images
 from ..automation.category_actions import get_categories
-from ..utils.retry import retry_on_error
+from ..automation.image_upload import upload_images
+from ..automation.post_actions import NaverBlogPostError, create_blog_post
 from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import NaverBlogError, UploadError
+from ..utils.retry import retry_on_error
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,7 @@ async def handle_create_post(
 
         # 재시도 가능한 에러면 다시 발생시켜서 tenacity가 재시도하도록
         if isinstance(custom_error, NaverBlogError):
-            raise custom_error
+            raise custom_error from e
 
         return {
             "success": False,

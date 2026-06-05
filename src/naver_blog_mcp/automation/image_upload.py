@@ -9,18 +9,20 @@ import base64
 import logging
 import tempfile
 from pathlib import Path
-from typing import Optional, Union, List
+from typing import List, Optional, Union
 
-from playwright.async_api import Page, Frame, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import Frame, Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
+from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import (
-    UploadError,
     ElementNotFoundError,
     TimeoutError,
+    UploadError,
 )
-from ..utils.error_handler import handle_playwright_error
-from ..utils.retry import retry_on_error
 from ..utils.iframe_helper import get_editor_frame
+from ..utils.retry import retry_on_error
+from ..utils.selector_helper import wait_for_any_selector
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,6 @@ async def click_image_button(frame: Frame, page: Optional[Page] = None) -> None:
             if await button.count() > 0:
                 await button.click()
                 logger.info(f"Image button clicked inside frame: {selector}")
-                await asyncio.sleep(0.5)  # 파일 input 생성 대기
                 return
         except Exception as e:
             logger.debug(f"Frame button click failed for {selector}: {e}")
@@ -88,7 +89,6 @@ async def click_image_button(frame: Frame, page: Optional[Page] = None) -> None:
                 if await button.count() > 0:
                     await button.click()
                     logger.info(f"Image button clicked on page: {selector}")
-                    await asyncio.sleep(0.5)
                     return
             except Exception as e:
                 logger.debug(f"Page button click failed for {selector}: {e}")
@@ -177,25 +177,15 @@ def _validate_image_path(image_path: Path) -> None:
 
 async def _find_file_input(frame: Frame, page: Page, timeout: int = 3000):
     """Find a file input inside the frame or on the page."""
-    for selector in FILE_INPUT_SELECTORS:
-        try:
-            locator = frame.locator(selector)
-            if await locator.count() > 0:
-                await locator.first.wait_for(state="attached", timeout=timeout)
-                return locator.first
-        except Exception:
-            continue
+    try:
+        return await wait_for_any_selector(frame, FILE_INPUT_SELECTORS, timeout=timeout, state="attached", context="file_input")
+    except Exception:
+        pass
 
-    for selector in FILE_INPUT_SELECTORS:
-        try:
-            locator = page.locator(selector)
-            if await locator.count() > 0:
-                await locator.first.wait_for(state="attached", timeout=timeout)
-                return locator.first
-        except Exception:
-            continue
-
-    return None
+    try:
+        return await wait_for_any_selector(page, FILE_INPUT_SELECTORS, timeout=timeout, state="attached", context="file_input")
+    except Exception:
+        return None
 
 
 async def _set_file_input_and_submit(
@@ -255,7 +245,7 @@ async def upload_image(
                 count = await frame.locator(selector).count()
                 if count > initial_image_count:
                     initial_image_count = count
-            except:
+            except Exception:
                 pass
 
         # 이미지 버튼 클릭 -> 파일 input set -> 업로드 대기
@@ -275,7 +265,7 @@ async def upload_image(
             "message": f"Image uploaded successfully: {image_path.name}",
         }
 
-    except (UploadError, ElementNotFoundError, TimeoutError) as e:
+    except (UploadError, ElementNotFoundError, TimeoutError):
         # 커스텀 에러는 그대로 전달
         raise
 
@@ -285,7 +275,7 @@ async def upload_image(
         raise UploadError(
             f"Failed to upload image: {str(custom_error)}",
             details={"path": str(image_path), "error": str(custom_error)}
-        )
+        ) from e
 
 
 def decode_base64_image(base64_string: str) -> tuple[bytes, str]:
@@ -321,7 +311,7 @@ def decode_base64_image(base64_string: str) -> tuple[bytes, str]:
         raise UploadError(
             f"Failed to decode base64 image: {str(e)}",
             details={"error": str(e)}
-        )
+        ) from e
 
 
 @retry_on_error
@@ -372,7 +362,7 @@ async def upload_base64_image(
 
         return result
 
-    except (UploadError, ElementNotFoundError, TimeoutError) as e:
+    except (UploadError, ElementNotFoundError, TimeoutError):
         raise
 
     except Exception as e:
@@ -381,7 +371,7 @@ async def upload_base64_image(
         raise UploadError(
             f"Failed to upload base64 image: {str(custom_error)}",
             details={"error": str(custom_error)}
-        )
+        ) from e
 
     finally:
         # 임시 파일 삭제

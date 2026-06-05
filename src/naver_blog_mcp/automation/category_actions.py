@@ -2,10 +2,10 @@
 
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, Optional
+
 from playwright.async_api import Page
 
-from ..utils.exceptions import NaverBlogError
 from ..utils.error_handler import handle_playwright_error
 
 logger = logging.getLogger(__name__)

@@ -2,9 +2,11 @@
 
 이 파일은 에디터 iframe을 찾고 반환하는 공통 함수를 제공합니다.
 """
-from typing import List
 import logging
-from playwright.async_api import Page, Frame, TimeoutError as PlaywrightTimeout
+from typing import List
+
+from playwright.async_api import Frame, Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from .exceptions import ElementNotFoundError
 
@@ -43,6 +45,6 @@ async def get_editor_frame(page: Page, selectors: List[str] | None = None, timeo
             continue
 
     raise ElementNotFoundError(
-        f"Editor iframe not found",
+        "Editor iframe not found",
         details={"selectors": selectors},
     )
