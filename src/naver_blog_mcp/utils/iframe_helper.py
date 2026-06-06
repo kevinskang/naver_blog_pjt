@@ -13,7 +13,9 @@ from .exceptions import ElementNotFoundError
 logger = logging.getLogger(__name__)
 
 
-async def get_editor_frame(page: Page, selectors: List[str] | None = None, timeout: int = 5000) -> Frame:
+async def get_editor_frame(
+    page: Page, selectors: List[str] | None = None, timeout: int = 5000
+) -> Frame:
     """페이지에서 에디터 iframe을 찾아 Frame 객체로 반환합니다.
 
     Args:

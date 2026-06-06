@@ -1,22 +1,67 @@
 """Playwright 에러 핸들링 유틸리티."""
 
+import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Type
 
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .exceptions import (
     ElementNotFoundError,
+    NaverBlogError,
+    NaverBlogTimeoutError,
     NavigationError,
     NetworkError,
-    TimeoutError,
     UIChangedError,
 )
 
 logger = logging.getLogger(__name__)
+
+# 에러 분류 키워드 매핑
+_ERROR_KEYWORDS: list[tuple[list[str], Type[NaverBlogError]]] = [
+    (["locator", "selector"], ElementNotFoundError),
+    (["navigation", "goto"], NavigationError),
+    (["net::", "network"], NetworkError),
+]
+
+
+def _make_error_details(
+    context: str,
+    screenshot_path: Optional[str],
+    page_html_path: Optional[str],
+    error_str: str,
+    error_type: Optional[str] = None,
+) -> dict:
+    """에러 details dict를 생성합니다."""
+    details: dict = {
+        "context": context,
+        "screenshot": screenshot_path,
+        "page_html": page_html_path,
+        "original_error": error_str,
+    }
+    if error_type:
+        details["error_type"] = error_type
+    return details
+
+
+def _classify_playwright_error(
+    error: Exception,
+    error_str: str,
+) -> Type[NaverBlogError]:
+    """에러 문자열을 분석해 매핑되는 커스텀 예외 클래스를 반환합니다.
+    """
+    if isinstance(error, PlaywrightTimeoutError):
+        return NaverBlogTimeoutError
+
+    lower = error_str.lower()
+    for keywords, exc_class in _ERROR_KEYWORDS:
+        if any(kw in lower for kw in keywords):
+            return exc_class
+
+    return NaverBlogError
 
 
 async def handle_playwright_error(
@@ -25,158 +70,111 @@ async def handle_playwright_error(
     context: str = "unknown",
     save_screenshot: bool = True,
 ) -> Exception:
-    """
-    Playwright 에러를 커스텀 에러로 변환하고 스크린샷/HTML을 저장합니다.
-
-    Args:
-        error: 원본 Playwright 에러
-        page: Playwright Page 객체 (없을 수 있음)
-        context: 에러 발생 컨텍스트 (예: "login", "post_write")
-        save_screenshot: 스크린샷 저장 여부
-
-    Returns:
-        변환된 커스텀 예외
+    """Playwright 에러를 커스텀 에러로 변환하고 스크린샷/HTML을 저장합니다.
     """
     error_str = str(error)
     error_type = type(error).__name__
 
-    logger.error(f"Playwright error in {context}: {error_type} - {error_str}")
+    logger.error("Playwright error in %s: %s - %s", context, error_type, error_str)
 
-    # 스크린샷 및 HTML 저장
-    screenshot_path = None
-    page_html_path = None
+    screenshot_path: Optional[str] = None
+    page_html_path: Optional[str] = None
+
     if save_screenshot and page is not None:
-        try:
-            screenshot_path = await save_error_screenshot(page, context, error_type)
-            logger.info(f"Screenshot saved: {screenshot_path}")
-        except Exception as e:
-            logger.warning(f"Failed to save screenshot: {e}")
+        # 스크린샷과 HTML을 병렬로 저장 (Phase 4 성능 개선)
+        screenshot_bytes, html_content = await asyncio.gather(
+            _capture_screenshot(page),
+            _capture_html(page),
+            return_exceptions=True,
+        )
 
-        try:
-            page_html_path = await save_page_html(page, context)
-            logger.info(f"Page HTML saved: {page_html_path}")
-        except Exception as e:
-            logger.warning(f"Failed to save page HTML: {e}")
+        if isinstance(screenshot_bytes, bytes):
+            screenshot_path = _write_file(
+                Path("playwright-state/screenshots"),
+                f"error_{context}_{error_type}",
+                ".png",
+                screenshot_bytes,
+                binary=True,
+            )
+            logger.info("Screenshot saved: %s", screenshot_path)
+        else:
+            logger.warning("Failed to capture screenshot: %s", screenshot_bytes)
 
-    # 에러 타입별 변환
-    if isinstance(error, PlaywrightTimeoutError):
-        # Timeout 에러
-        return TimeoutError(
-            f"Timeout in {context}: {error_str}",
-            details={
-                "context": context,
-                "screenshot": screenshot_path,
-                "page_html": page_html_path,
-                "original_error": error_str,
-            }
-        )
-    elif "locator" in error_str.lower() or "selector" in error_str.lower():
-        # 셀렉터 에러
-        return ElementNotFoundError(
-            f"Element not found in {context}: {error_str}",
-            details={
-                "context": context,
-                "screenshot": screenshot_path,
-                "page_html": page_html_path,
-                "original_error": error_str,
-            }
-        )
-    elif "navigation" in error_str.lower() or "goto" in error_str.lower():
-        # 네비게이션 에러
-        return NavigationError(
-            f"Navigation failed in {context}: {error_str}",
-            details={
-                "context": context,
-                "screenshot": screenshot_path,
-                "page_html": page_html_path,
-                "original_error": error_str,
-            }
-        )
-    elif "net::" in error_str.lower() or "network" in error_str.lower():
-        # 네트워크 에러
-        return NetworkError(
-            f"Network error in {context}: {error_str}",
-            details={
-                "context": context,
-                "screenshot": screenshot_path,
-                "page_html": page_html_path,
-                "original_error": error_str,
-            }
-        )
+        if isinstance(html_content, str):
+            page_html_path = _write_file(
+                Path("playwright-state/html"),
+                f"page_{context}",
+                ".html",
+                html_content.encode("utf-8"),
+                binary=True,
+            )
+            logger.info("Page HTML saved: %s", page_html_path)
+        else:
+            logger.warning("Failed to capture HTML: %s", html_content)
+
+    exc_class = _classify_playwright_error(error, error_str)
+    details = _make_error_details(
+        context, screenshot_path, page_html_path, error_str,
+        error_type if exc_class is NaverBlogError else None,
+    )
+    msg_prefix = {
+        NaverBlogTimeoutError: "Timeout",
+        ElementNotFoundError: "Element not found",
+        NavigationError: "Navigation failed",
+        NetworkError: "Network error",
+        NaverBlogError: "Unexpected error",
+    }.get(exc_class, "Error")
+
+    return exc_class(f"{msg_prefix} in {context}: {error_str}", details=details)
+
+
+async def _capture_screenshot(page: Page) -> bytes:
+    return await page.screenshot(full_page=True)
+
+
+async def _capture_html(page: Page) -> str:
+    return await page.content()
+
+
+def _write_file(
+    directory: Path,
+    prefix: str,
+    suffix: str,
+    data: bytes,
+    binary: bool = True,
+) -> str:
+    """타임스탬프 기반 파일을 directory에 저장하고 경로를 반환합니다.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = directory / f"{prefix}_{timestamp}{suffix}"
+    if binary:
+        filepath.write_bytes(data)
     else:
-        # 기타 에러
-        from .exceptions import NaverBlogError
-        return NaverBlogError(
-            f"Unexpected error in {context}: {error_str}",
-            details={
-                "context": context,
-                "error_type": error_type,
-                "screenshot": screenshot_path,
-                "page_html": page_html_path,
-                "original_error": error_str,
-            }
-        )
-
-
-async def save_error_screenshot(
-    page: Page,
-    context: str,
-    error_type: str,
-) -> str:
-    """
-    에러 발생 시 스크린샷을 저장합니다.
-
-    Args:
-        page: Playwright Page 객체
-        context: 에러 발생 컨텍스트
-        error_type: 에러 타입
-
-    Returns:
-        저장된 스크린샷 경로
-    """
-    # 스크린샷 디렉토리 생성
-    screenshot_dir = Path("playwright-state/screenshots")
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-
-    # 파일명 생성
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"error_{context}_{error_type}_{timestamp}.png"
-    filepath = screenshot_dir / filename
-
-    # 스크린샷 저장
-    await page.screenshot(path=str(filepath), full_page=True)
-
+        filepath.write_text(data.decode("utf-8"), encoding="utf-8")
     return str(filepath)
 
 
-async def save_page_html(
-    page: Page,
-    context: str,
-) -> str:
-    """
-    디버깅을 위해 현재 페이지의 HTML을 저장합니다.
+async def save_error_screenshot(page: Page, context: str, error_type: str) -> str:
+    """에러 발생 시 스크린샷을 저장합니다."""
+    data = await _capture_screenshot(page)
+    return _write_file(
+        Path("playwright-state/screenshots"),
+        f"error_{context}_{error_type}",
+        ".png",
+        data,
+    )
 
-    Args:
-        page: Playwright Page 객체
-        context: 저장 컨텍스트
 
-    Returns:
-        저장된 HTML 파일 경로
-    """
-    # HTML 디렉토리 생성
-    html_dir = Path("playwright-state/html")
-    html_dir.mkdir(parents=True, exist_ok=True)
-
-    # 파일명 생성
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"page_{context}_{timestamp}.html"
-    filepath = html_dir / filename
-
-    # HTML 저장
-    content = await page.content()
-    filepath.write_text(content, encoding="utf-8")
-
-    return str(filepath)
+async def save_page_html(page: Page, context: str) -> str:
+    """디버깅을 위해 현재 페이지의 HTML을 저장합니다."""
+    content = await _capture_html(page)
+    return _write_file(
+        Path("playwright-state/html"),
+        f"page_{context}",
+        ".html",
+        content.encode("utf-8"),
+    )
 
 
 def is_retryable_error(error: Exception) -> bool:

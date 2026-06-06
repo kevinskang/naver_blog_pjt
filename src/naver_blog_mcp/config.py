@@ -49,6 +49,11 @@ class Config:
     VIEWPORT: dict[str, int] = {"width": 1920, "height": 1080}
 
     @classmethod
+    def is_debug(cls) -> bool:
+        """DEBUG 로그 레벨 여부를 반환합니다."""
+        return cls.LOG_LEVEL == "DEBUG"
+
+    @classmethod
     def validate(cls) -> None:
         """설정 유효성 검사."""
         if not cls.NAVER_BLOG_ID:

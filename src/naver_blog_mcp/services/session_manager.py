@@ -1,5 +1,6 @@
 """네이버 블로그 세션 관리자."""
 
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -9,6 +10,8 @@ from playwright.async_api import Browser, BrowserContext
 from ..automation.login import login_to_naver, verify_login_session
 from ..config import config, get_context_config
 from ..utils.exceptions import LoginError
+
+logger = logging.getLogger(__name__)
 
 STEALTH_SCRIPT = r"""
 Object.defineProperty(navigator, 'webdriver', {
@@ -57,17 +60,10 @@ class SessionManager:
         storage_path: str = config.SESSION_STORAGE_PATH,
         session_validity_hours: int = config.SESSION_VALIDITY_HOURS,
     ):
-        """
-        세션 매니저 초기화.
-
-        Args:
-            user_id: 네이버 아이디
-            password: 네이버 비밀번호
-            storage_path: 세션 저장 경로
-            session_validity_hours: 세션 유효 시간 (시간)
-        """
+        """세션 매니저 초기화."""
         self.user_id = user_id
-        self.password = password
+        # 패스워드는 메모리에 저장하지 않고, 로그인 시점에 config에서 직접 참조
+        self._password_hint = bool(password)  # 설정 여부만 기록
         self.storage_path = storage_path
         self.session_validity_hours = session_validity_hours
         self.last_login_time: Optional[datetime] = None
@@ -142,13 +138,13 @@ class SessionManager:
 
                 # 실제 로그인 상태 확인
                 if await self.is_session_valid(context):
-                    print(f"저장된 세션 재사용: {self.storage_path}")
+                    logger.info("저장된 세션 재사용: %s", self.storage_path)
                     return context
                 else:
-                    print("저장된 세션이 만료되었습니다. 재로그인합니다.")
+                    logger.info("저장된 세션이 만료되었습니다. 재로그인합니다.")
                     await context.close()
             except Exception as e:
-                print(f"세션 복원 실패: {e}. 재로그인합니다.")
+                logger.warning("세션 복원 실패: %s. 재로그인합니다.", e)
 
         # 2. 새로 로그인
         context = await browser.new_context(**get_context_config())
@@ -159,14 +155,15 @@ class SessionManager:
             result = await login_to_naver(
                 page=page,
                 user_id=self.user_id,
-                password=self.password,
+                password=config.NAVER_BLOG_PASSWORD,  # 메모리 저장 없이 직접 참조
                 storage_state_path=self.storage_path,
                 headless=headless,
             )
 
             self.last_login_time = datetime.now()
-            print(f"{result['message']}")
-            print(f"   세션 저장: {result['storage_state_path']}")
+            logger.info(
+                "%s (세션 저장: %s)", result["message"], result["storage_state_path"]
+            )
 
             return context
 
@@ -201,7 +198,7 @@ class SessionManager:
             return context
 
         # 세션이 만료되었으면 재로그인
-        print("세션이 만료되었습니다. 재로그인합니다.")
+        logger.info("세션이 만료되었습니다. 재로그인합니다.")
         await context.close()
         return await self.get_or_create_session(browser, headless)
 
@@ -209,4 +206,4 @@ class SessionManager:
         """저장된 세션 파일을 삭제합니다."""
         if Path(self.storage_path).exists():
             Path(self.storage_path).unlink()
-            print(f"세션 파일 삭제: {self.storage_path}")
+            logger.info("세션 파일 삭제: %s", self.storage_path)

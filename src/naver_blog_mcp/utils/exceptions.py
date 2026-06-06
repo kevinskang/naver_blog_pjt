@@ -66,10 +66,14 @@ class NetworkError(NaverBlogError):
     pass
 
 
-class TimeoutError(NaverBlogError):
+class NaverBlogTimeoutError(NaverBlogError):
     """타임아웃 에러."""
 
     pass
+
+
+# 하위 호환성 유지
+TimeoutError = NaverBlogTimeoutError
 
 
 class UIChangedError(NaverBlogError):

@@ -33,7 +33,9 @@ async def _select_category(page: Page, category_name: str) -> bool:
             for sel in native_selectors:
                 if await frame.locator(sel).count() > 0:
                     await frame.locator(sel).first.select_option(label=category_name)
-                    logger.info(f"카테고리 선택 완료 (native select): {category_name}")
+                    logger.info(
+                        "카테고리 선택 완료 (native select): %s", category_name
+                    )
                     return True
 
             # 방법 2: 커스텀 드롭다운 버튼 클릭 후 목록에서 선택
@@ -47,10 +49,15 @@ async def _select_category(page: Page, category_name: str) -> bool:
                 if await frame.locator(sel).count() > 0:
                     await frame.locator(sel).first.click()
                     await asyncio.sleep(0.5)
-                    option_sel = f"li:has-text('{category_name}'), a:has-text('{category_name}')"
+                    option_sel = (
+                        f"li:has-text('{category_name}'),"
+                        f" a:has-text('{category_name}')"
+                    )
                     if await frame.locator(option_sel).count() > 0:
                         await frame.locator(option_sel).first.click()
-                        logger.info(f"카테고리 선택 완료 (커스텀 드롭다운): {category_name}")
+                        logger.info(
+                            "카테고리 선택 완료 (커스텀 드롭다운): %s", category_name
+                        )
                         return True
         except Exception:
             continue
@@ -107,7 +114,11 @@ async def _close_page_popups(page: Page) -> None:
 
 async def _type_content_in_iframe(iframe, content: str) -> bool:
     """Type content into iframe's contenteditable body selectors."""
-    body_selectors = POST_WRITE_CONTENT_BODY if isinstance(POST_WRITE_CONTENT_BODY, list) else [POST_WRITE_CONTENT_BODY]
+    body_selectors = (
+        POST_WRITE_CONTENT_BODY
+        if isinstance(POST_WRITE_CONTENT_BODY, list)
+        else [POST_WRITE_CONTENT_BODY]
+    )
 
     for body_selector in body_selectors:
         try:
@@ -115,7 +126,9 @@ async def _type_content_in_iframe(iframe, content: str) -> bool:
             if content_body:
                 await content_body.click()
                 await content_body.fill(content)
-                logger.info(f"본문 입력 완료 (iframe 방식, selector: {body_selector})")
+                logger.info(
+                    "본문 입력 완료 (iframe 방식, selector: %s)", body_selector
+                )
                 return True
         except Exception:
             continue
@@ -138,7 +151,9 @@ async def _type_content_direct(page: Page, content: str) -> bool:
             if await locator.count() > 0:
                 await locator.click()
                 await locator.fill(content)
-                logger.info(f"본문 입력 완료 (직접 방식, selector: {selector})")
+                logger.info(
+                    "본문 입력 완료 (직접 방식, selector: %s)", selector
+                )
                 return True
         except Exception:
             continue
@@ -165,83 +180,87 @@ async def navigate_to_post_write_page(
     """
     try:
         # 방법 1: blog_id가 주어진 경우
+        url: str
         if blog_id:
             url = f"https://blog.naver.com/{blog_id}/postwrite"
         else:
             # 방법 2: 블로그 메인에서 글쓰기 버튼 찾아서 클릭
-            await page.goto("https://blog.naver.com", wait_until="networkidle", timeout=timeout)
+            await page.goto(
+                "https://blog.naver.com", wait_until="networkidle", timeout=timeout
+            )
 
-            # 글쓰기 버튼 찾기 (여러 셀렉터 시도)
             write_btn_selectors = [
                 "a[href*='postwrite']",
                 "a:has-text('글쓰기')",
                 "button:has-text('글쓰기')",
             ]
 
-            write_btn_found = False
+            url = "https://blog.naver.com/postwrite"  # 기본값 선언
             for selector in write_btn_selectors:
                 count = await page.locator(selector).count()
                 if count > 0:
-                    # href 가져오기
                     element = page.locator(selector).first
                     href = await element.get_attribute("href")
                     if href:
-                        # 절대 URL로 변환
                         if href.startswith("/"):
                             url = f"https://blog.naver.com{href}"
                         elif href.startswith("http"):
                             url = href
                         else:
                             url = f"https://blog.naver.com/{href}"
-                        write_btn_found = True
-                        print(f"   글쓰기 버튼 발견: {url}")
+                        logger.info("글쓰기 버튼 발견: %s", url)
                         break
-
-            if not write_btn_found:
-                # 기본 URL 사용
-                url = "https://blog.naver.com/postwrite"
-                print(f"   글쓰기 버튼을 찾지 못했습니다. 기본 URL 사용: {url}")
+            else:
+                logger.info(
+                    "글쓰기 버튼을 찾지 못했습니다. 기본 URL 사용: %s", url
+                )
 
         await page.goto(url, wait_until="networkidle", timeout=timeout)
 
-        # 글쓰기 페이지인지 확인
         current_url = page.url
-        logger.info(f"현재 URL: {current_url}")
+        logger.info("현재 URL: %s", current_url)
 
-        # URL에 postwrite, PostWriteForm, Redirect=Write가 포함되어 있으면 성공으로 간주
         if (
             "postwrite" in current_url.lower()
             or "PostWriteForm" in current_url
             or "Redirect=Write" in current_url
         ):
-            logger.info(f"글쓰기 페이지로 이동: {current_url}")
+            logger.info("글쓰기 페이지로 이동: %s", current_url)
             return
 
         # 제목 입력란 확인 (추가 검증)
         title_input_exists = False
-        if isinstance(POST_WRITE_TITLE, list):
-            for selector in POST_WRITE_TITLE:
-                count = await page.locator(selector).count()
-                if count > 0:
-                    title_input_exists = True
-                    print(f"   제목 입력란 발견: {selector}")
-                    break
-        else:
-            count = await page.locator(POST_WRITE_TITLE).count()
-            title_input_exists = count > 0
+        selectors = (
+            POST_WRITE_TITLE
+            if isinstance(POST_WRITE_TITLE, list)
+            else [POST_WRITE_TITLE]
+        )
+        for selector in selectors:
+            count = await page.locator(selector).count()
+            if count > 0:
+                title_input_exists = True
+                logger.debug("제목 입력란 발견: %s", selector)
+                break
 
         if title_input_exists:
-            logger.info(f"글쓰기 페이지로 이동: {url}")
+            logger.info("글쓰기 페이지로 이동: %s", url)
             return
 
-        raise NaverBlogPostError(f"글쓰기 페이지 로딩에 실패했습니다. 현재 URL: {current_url}")
+        raise NaverBlogPostError(
+            f"글쓰기 페이지 로딩에 실패했습니다. 현재 URL: {current_url}"
+        )
 
     except PlaywrightTimeout as e:
-        raise NaverBlogPostError(f"글쓰기 페이지 이동 시간 초과: {str(e)}") from e
+        raise NaverBlogPostError(
+            f"글쓰기 페이지 이동 시간 초과: {str(e)}"
+        ) from e
+    except NaverBlogPostError:
+        raise
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise NaverBlogPostError(f"글쓰기 페이지 이동 중 오류: {str(e)}") from e
+        logger.debug("글쓰기 페이지 이동 중 예외 발생", exc_info=True)
+        raise NaverBlogPostError(
+            f"글쓰기 페이지 이동 중 오류: {str(e)}"
+        ) from e
 
 
 async def fill_post_title(page: Page, title: str) -> None:
@@ -356,7 +375,7 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
         raise NaverBlogPostError(f"본문 입력 중 오류: {str(e)}") from e
 
 
-async def publish_post(
+async def publish_post(  # noqa: C901
     page: Page,
     wait_for_completion: bool = True,
     timeout: int = 30000,
@@ -386,12 +405,14 @@ async def publish_post(
         # 0. 메인 페이지로 포커스 전환 (iframe에서 나오기)
         # 명시적으로 메인 페이지로 전환
         await page.bring_to_front()
-        await page.evaluate("() => { if (window.parent) { window.parent.focus(); } window.focus(); }")
+        await page.evaluate(
+            "() => { if (window.parent) { window.parent.focus(); } window.focus(); }"
+        )
         await asyncio.sleep(1)
 
         # 페이지가 실제로 로드되었는지 확인
-        print(f"   현재 URL: {page.url}")
-        print(f"   페이지 타이틀: {await page.title()}")
+        logger.debug("현재 URL: %s", page.url)
+        logger.debug("페이지 타이틀: %s", await page.title())
 
         # 페이지 내 모든 팝업/모달 닫기 (도움말 팝업 등)
         try:
@@ -408,7 +429,7 @@ async def publish_post(
                 if popup_count > 0:
                     try:
                         await page.locator(close_sel).first.click(timeout=2000)
-                        print(f"   페이지 팝업 닫기: {close_sel}")
+                        logger.debug("페이지 팝업 닫기: %s", close_sel)
                         await asyncio.sleep(0.5)
                     except Exception:
                         pass
@@ -452,7 +473,11 @@ async def publish_post(
         for frame in page.frames:
             try:
                 # close frame help popups
-                for help_sel in ["button.se-help-close-btn", "button:has-text('닫기')", ".se-help-close"]:
+                for help_sel in [
+                    "button.se-help-close-btn",
+                    "button:has-text('닫기')",
+                    ".se-help-close",
+                ]:
                     try:
                         if await frame.locator(help_sel).count() > 0:
                             await frame.locator(help_sel).first.click(timeout=2000)
@@ -485,7 +510,9 @@ async def publish_post(
                 if category:
                     selected = await _select_category(page, category)
                     if not selected:
-                        logger.warning(f"카테고리 '{category}' 선택 실패 - 기본 카테고리로 발행")
+                        logger.warning(
+                            "카테고리 '%s' 선택 실패 - 기본 카테고리로 발행", category
+                        )
                     await asyncio.sleep(0.5)
 
                 # 태그 입력
@@ -495,10 +522,13 @@ async def publish_post(
 
                 # 대화상자 내 발행 버튼을 force=True로 클릭 시도
                 final_publish_clicked = False
-                for idx, frame in enumerate(page.frames):
+                for frame in page.frames:
                     try:
                         dialog_publish_selectors = [
-                            ".layer_popup__i0QOY button[class*='confirm']:has-text('발행')",
+                            (
+                                ".layer_popup__i0QOY"
+                                " button[class*='confirm']:has-text('발행')"
+                            ),
                             ".layer_popup__i0QOY button:has-text('발행')",
                         ]
 
@@ -506,7 +536,9 @@ async def publish_post(
                             try:
                                 btn_count = await frame.locator(selector).count()
                                 if btn_count > 0:
-                                    await frame.locator(selector).first.click(force=True, timeout=5000)
+                                    await frame.locator(selector).first.click(
+                                        force=True, timeout=5000
+                                    )
                                     final_publish_clicked = True
                                     await asyncio.sleep(2)
                                     break
@@ -524,12 +556,16 @@ async def publish_post(
                         try:
                             result = await frame.evaluate("""
                                 () => {
-                                    const popup = document.querySelector('.layer_popup__i0QOY.is_show__TMSLq');
+                                    const popup = document.querySelector(
+                                        '.layer_popup__i0QOY.is_show__TMSLq'
+                                    );
                                     if (!popup) return 'No popup';
 
                                     const buttons = popup.querySelectorAll('button');
                                     for (let btn of buttons) {
-                                        if ((btn.textContent || '').trim() === '발행') {
+                                        if (
+                                            (btn.textContent || '').trim() === '발행'
+                                        ) {
                                             btn.click();
                                             return 'Clicked';
                                         }
@@ -556,7 +592,10 @@ async def publish_post(
 
                 # PostView 페이지인지 확인 (본문 영역이 있는지)
                 # 글쓰기 페이지가 아닌 글 보기 페이지인지 체크
-                if "postwrite" not in post_url.lower() and "redirect=write" not in post_url.lower():
+                if (
+                    "postwrite" not in post_url.lower()
+                    and "redirect=write" not in post_url.lower()
+                ):
                     # URL이 {blog_id}/{post_id} 형태인지 확인
                     logger.info(f"발행 완료: {post_url}")
                     return {
@@ -565,7 +604,9 @@ async def publish_post(
                         "post_url": post_url,
                     }
                 else:
-                    raise NaverBlogPostError("발행 후 페이지 이동에 실패했습니다.")
+                    raise NaverBlogPostError(
+                        "발행 후 페이지 이동에 실패했습니다."
+                    )
 
             except PlaywrightTimeout as e:
                 raise NaverBlogPostError("발행 완료 대기 시간 초과") from e
@@ -627,7 +668,9 @@ async def create_blog_post(
         await fill_post_content(page, content, use_html)
 
         # 4. 발행
-        result = await publish_post(page, wait_for_completion, category=category, tags=tags)
+        result = await publish_post(
+            page, wait_for_completion, category=category, tags=tags
+        )
 
         result["title"] = title
         return result

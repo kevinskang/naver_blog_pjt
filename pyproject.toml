@@ -50,6 +50,16 @@ target-version = "py313"
 select = ["E", "F", "I", "B", "C", "S"]
 extend-ignore = ["E203"]
 
+[tool.ruff.lint.mccabe]
+# Playwright 자동화 특성상 복잡한 함수가 필요 (publish_post, navigate 등)
+max-complexity = 20
+
+[tool.ruff.lint.per-file-ignores]
+# Playwright 자동화 코드는 셀렉터 탐색 시 except: pass/continue 패턴이 의도적임
+"src/naver_blog_mcp/automation/*.py" = ["S110", "S112"]
+"src/naver_blog_mcp/utils/selector_helper.py" = ["S112"]
+"src/naver_blog_mcp/utils/iframe_helper.py" = ["S112"]
+
 [tool.mypy]
 python_version = "3.13"
 strict = true

@@ -154,7 +154,9 @@ class NaverBlogMCPServer:
 
         # 브라우저 실행
         self.browser = await self.playwright.chromium.launch(**browser_config)
-        logger.info(f"Browser launched (headless={browser_config.get('headless', True)})")
+        logger.info(
+            "Browser launched (headless=%s)", browser_config.get("headless", True)
+        )
 
         # 세션 초기화 시도 (실패해도 서버는 계속 실행)
         await self._try_init_session()

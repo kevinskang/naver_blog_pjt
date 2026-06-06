@@ -10,10 +10,42 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import CaptchaDetectedError, InvalidCredentialsError, LoginError
+from .selectors import LOGIN_BTN, LOGIN_ID_INPUT, LOGIN_PW_INPUT
 
 logger = logging.getLogger(__name__)
 
-from .selectors import LOGIN_BTN, LOGIN_ID_INPUT, LOGIN_PW_INPUT
+_LOGIN_ERROR_SELECTORS = [".error_message", ".error_txt", ".err_txt", "#error"]
+
+
+async def _check_login_error(page: Page) -> Optional[str]:
+    """로그인 에러 메시지를 확인합니다. 에러가 있으면 메시지 반환, 없으면 None."""
+    for selector in _LOGIN_ERROR_SELECTORS:
+        try:
+            element = page.locator(selector).first
+            if await element.count() > 0 and await element.is_visible():
+                text = await element.text_content()
+                if text and text.strip():
+                    return text.strip()
+        except Exception:  # noqa: S110
+            continue
+    return None
+
+
+async def _verify_login_success(page: Page) -> bool:
+    """blog.naver.com 도메인과 네이버 쿠키 존재로 로그인 성공을 확인합니다."""
+    current_url = page.url
+    if "nid.naver.com" in current_url:
+        return False
+    if "blog.naver.com" not in current_url:
+        raise LoginError(f"예상치 못한 URL로 리다이렉트: {current_url}")
+
+    logger.debug("blog.naver.com 도메인 접속 성공: %s", current_url)
+    cookies = await page.context.cookies()
+    naver_cookies = [c for c in cookies if "naver.com" in c["domain"]]
+    if not naver_cookies:
+        raise LoginError("로그인 후 세션 확인에 실패했습니다. (쿠키 없음)")
+    logger.debug("네이버 쿠키 %d개 확인", len(naver_cookies))
+    return True
 
 
 async def login_to_naver(
@@ -23,23 +55,7 @@ async def login_to_naver(
     storage_state_path: Optional[str] = None,
     headless: bool = True,
 ) -> dict:
-    """
-    네이버에 로그인하고 세션을 저장합니다.
-
-    Args:
-        page: Playwright Page 객체
-        user_id: 네이버 아이디
-        password: 네이버 비밀번호
-        storage_state_path: 세션 저장 경로 (기본: playwright-state/auth.json)
-        headless: 헤드리스 모드 여부
-
-    Returns:
-        로그인 결과 딕셔너리
-        {
-            "success": bool,
-            "message": str,
-            "storage_state_path": str (세션 저장 경로)
-        }
+    """네이버에 로그인하고 세션을 저장합니다.
 
     Raises:
         CaptchaDetectedError: CAPTCHA가 감지된 경우
@@ -50,90 +66,68 @@ async def login_to_naver(
         storage_state_path = "playwright-state/auth.json"
 
     try:
-        # 1. 로그인 페이지로 이동
-        await page.goto("https://nid.naver.com/nidlogin.login", wait_until="networkidle")
-        await asyncio.sleep(1)  # 페이지 로딩 대기
+        # 1. 로그인 페이지로 이동 후 입력 필드 대기
+        await page.goto(
+            "https://nid.naver.com/nidlogin.login", wait_until="networkidle"
+        )
+        await page.wait_for_selector(LOGIN_ID_INPUT, state="visible", timeout=10000)
 
         # 2. 아이디 입력
         await page.click(LOGIN_ID_INPUT)
         await page.fill(LOGIN_ID_INPUT, user_id)
         await page.dispatch_event(LOGIN_ID_INPUT, "input")
         await page.dispatch_event(LOGIN_ID_INPUT, "change")
-        await asyncio.sleep(1)  # 페이지 로딩 대기
 
         # 3. 비밀번호 입력
+        await page.wait_for_selector(LOGIN_PW_INPUT, state="visible", timeout=5000)
         await page.click(LOGIN_PW_INPUT)
         await page.fill(LOGIN_PW_INPUT, password)
         await page.dispatch_event(LOGIN_PW_INPUT, "input")
         await page.dispatch_event(LOGIN_PW_INPUT, "change")
-        await asyncio.sleep(0.5)
 
-        # 4. 로그인 버튼 클릭
-        # 대체 셀렉터 시도
+        # 4. 로그인 버튼 클릭 (대체 셀렉터 지원)
         login_clicked = False
-        if isinstance(LOGIN_BTN, list):
-            for selector in LOGIN_BTN:
-                try:
-                    await page.click(selector, timeout=3000)
-                    login_clicked = True
-                    break
-                except PlaywrightTimeout:
-                    continue
-        else:
-            await page.click(LOGIN_BTN)
-            login_clicked = True
+        btn_list = LOGIN_BTN if isinstance(LOGIN_BTN, list) else [LOGIN_BTN]
+        for selector in btn_list:
+            try:
+                await page.click(selector, timeout=3000)
+                login_clicked = True
+                break
+            except PlaywrightTimeout:
+                continue
 
         if not login_clicked:
             raise LoginError("로그인 버튼을 찾을 수 없습니다.")
 
-        # 5. 로그인 완료 대기 (네이버 메인 페이지 또는 에러 메시지)
-        try:
+        # 5. 로그인 완료 대기
+        for state in ("networkidle", "load"):
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
+                await page.wait_for_load_state(state, timeout=10000)
+                break
             except PlaywrightTimeout:
-                pass
-            try:
-                await page.wait_for_load_state("load", timeout=10000)
-            except PlaywrightTimeout:
-                pass
+                continue
 
-            current_url = page.url
-            if "nid.naver.com" in current_url:
-                # CAPTCHA 확인
-                captcha_frame_count = await page.locator("iframe[src*='captcha']").count()
-                captcha_img_visible = await page.locator("#rcapt").is_visible() or await page.locator("#captchaimg").is_visible()
-                if captcha_frame_count > 0 or captcha_img_visible:
-                    if not headless:
-                        await _wait_for_captcha_manual(page)
-                    else:
-                        raise CaptchaDetectedError(
-                            "CAPTCHA가 감지되었습니다. HEADLESS=false로 설정하고 수동으로 풀어주세요."
-                        )
+        current_url = page.url
+        if "nid.naver.com" in current_url:
+            # CAPTCHA 확인
+            captcha_count = await page.locator("iframe[src*='captcha']").count()
+            captcha_visible = (
+                await page.locator("#rcapt").is_visible()
+                or await page.locator("#captchaimg").is_visible()
+            )
+            if captcha_count > 0 or captcha_visible:
+                if not headless:
+                    await _wait_for_captcha_manual(page)
+                else:
+                    raise CaptchaDetectedError(
+                        "CAPTCHA가 감지되었습니다. "
+                        "HEADLESS=false로 설정하고 수동으로 풀어주세요."
+                    )
 
-                # 에러 메시지 확인
-                login_error_selectors = [
-                    ".error_message",
-                    ".error_txt",
-                    ".err_txt",
-                    "#error",
-                ]
-                error_msg = None
-                for selector in login_error_selectors:
-                    try:
-                        error_msg_element = page.locator(selector).first
-                        if await error_msg_element.count() > 0 and await error_msg_element.is_visible():
-                            text = await error_msg_element.text_content()
-                            if text and text.strip():
-                                error_msg = text.strip()
-                                break
-                    except Exception:
-                        continue
-
-                if error_msg:
-                    raise InvalidCredentialsError(f"로그인 실패: {error_msg}")
-                raise LoginError("로그인에 실패했습니다.")
-        except PlaywrightTimeout:
-            pass
+            error_msg = await _check_login_error(page)
+            if error_msg:
+                raise InvalidCredentialsError(f"로그인 실패: {error_msg}")
+            raise LoginError("로그인에 실패했습니다.")
 
         # 6. 세션 저장
         Path(storage_state_path).parent.mkdir(parents=True, exist_ok=True)
@@ -141,29 +135,8 @@ async def login_to_naver(
 
         # 7. 블로그 페이지로 이동하여 로그인 확인
         await page.goto("https://blog.naver.com", wait_until="load")
-        await asyncio.sleep(2)  # 추가 로딩 대기
-
-        # 로그인 상태 확인
-        current_url = page.url
-
-        # 방법 1: URL 확인 (로그인 페이지로 리다이렉트되지 않았는지)
-        is_login_page = "nid.naver.com" in current_url
-        if is_login_page:
-            raise LoginError("로그인 페이지로 리다이렉트되었습니다.")
-
-        # 방법 2: blog.naver.com 도메인에 있으면 로그인 성공으로 간주
-        # (로그인하지 않았으면 nid.naver.com으로 리다이렉트됨)
-        if "blog.naver.com" in current_url:
-            print(f"   로그인 확인: blog.naver.com 도메인 접속 성공 ({current_url})")
-            # 추가로 세션이 유효한지 확인 (쿠키 존재 여부)
-            cookies = await page.context.cookies()
-            naver_cookies = [c for c in cookies if 'naver.com' in c['domain']]
-            if len(naver_cookies) > 0:
-                print(f"   로그인 확인: 네이버 쿠키 {len(naver_cookies)}개 발견")
-            else:
-                raise LoginError("로그인 후 세션 확인에 실패했습니다. (쿠키 없음)")
-        else:
-            raise LoginError(f"예상치 못한 URL로 리다이렉트: {current_url}")
+        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+        await _verify_login_success(page)
 
         return {
             "success": True,
@@ -237,7 +210,9 @@ async def verify_login_session(page: Page) -> bool:
 
         return False
     except Exception as e:
-        await handle_playwright_error(e, page, "verify_login_session", save_screenshot=False)
+        await handle_playwright_error(
+            e, page, "verify_login_session", save_screenshot=False
+        )
         return False
 
 

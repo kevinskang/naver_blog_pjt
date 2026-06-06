@@ -7,6 +7,7 @@ Playwright 자동화 함수를 제공합니다.
 import asyncio
 import base64
 import logging
+import re
 import tempfile
 from pathlib import Path
 from typing import List, Optional, Union
@@ -60,7 +61,8 @@ UPLOADED_IMAGE_SELECTORS = [
 
 
 # Delegate iframe lookup to shared util
-# `get_editor_frame` is provided by `naver_blog_mcp.utils.iframe_helper.get_editor_frame`
+# `get_editor_frame` is provided by
+# `naver_blog_mcp.utils.iframe_helper.get_editor_frame`
 
 
 async def click_image_button(frame: Frame, page: Optional[Page] = None) -> None:
@@ -167,7 +169,9 @@ def _validate_image_path(image_path: Path) -> None:
             details={"path": str(image_path), "size": file_size}
         )
 
-    supported_formats = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.heic', '.heif', '.webp']
+    supported_formats = [
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.heic', '.heif', '.webp'
+    ]
     if image_path.suffix.lower() not in supported_formats:
         raise UploadError(
             f"Unsupported image format: {image_path.suffix}",
@@ -178,12 +182,24 @@ def _validate_image_path(image_path: Path) -> None:
 async def _find_file_input(frame: Frame, page: Page, timeout: int = 3000):
     """Find a file input inside the frame or on the page."""
     try:
-        return await wait_for_any_selector(frame, FILE_INPUT_SELECTORS, timeout=timeout, state="attached", context="file_input")
+        return await wait_for_any_selector(
+            frame,
+            FILE_INPUT_SELECTORS,
+            timeout=timeout,
+            state="attached",
+            context="file_input",
+        )
     except Exception:
         pass
 
     try:
-        return await wait_for_any_selector(page, FILE_INPUT_SELECTORS, timeout=timeout, state="attached", context="file_input")
+        return await wait_for_any_selector(
+            page,
+            FILE_INPUT_SELECTORS,
+            timeout=timeout,
+            state="attached",
+            context="file_input",
+        )
     except Exception:
         return None
 
@@ -278,6 +294,19 @@ async def upload_image(
         ) from e
 
 
+_DATA_URL_RE = re.compile(r"^data:(image/[\w.+-]+);base64,(.+)$", re.DOTALL)
+_MIME_TO_EXT: dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+}
+
+
 def decode_base64_image(base64_string: str) -> tuple[bytes, str]:
     """Base64 인코딩된 이미지를 디코딩합니다.
 
@@ -288,29 +317,30 @@ def decode_base64_image(base64_string: str) -> tuple[bytes, str]:
         (이미지 바이트, 파일 확장자) 튜플
 
     Raises:
-        UploadError: 디코딩 실패
+        UploadError: 잘못된 형식 또는 디코딩 실패
     """
     try:
-        # data:image/... 형식 처리
-        if base64_string.startswith("data:image/"):
-            # data:image/png;base64,iVBORw0KG... 형식
-            header, encoded = base64_string.split(",", 1)
-            # image/png 추출
-            mime_type = header.split(";")[0].split(":")[1]
-            extension = "." + mime_type.split("/")[1]
+        if base64_string.startswith("data:"):
+            m = _DATA_URL_RE.match(base64_string)
+            if not m:
+                raise UploadError("잘못된 data URL 형식입니다.")
+            mime_type, encoded = m.group(1), m.group(2)
+            extension = _MIME_TO_EXT.get(
+                mime_type.lower(), "." + mime_type.split("/")[-1]
+            )
         else:
-            # 순수 base64 문자열
             encoded = base64_string
-            extension = ".png"  # 기본값
+            extension = ".png"
 
-        # 디코딩
         image_bytes = base64.b64decode(encoded)
         return image_bytes, extension
 
+    except UploadError:
+        raise
     except Exception as e:
         raise UploadError(
-            f"Failed to decode base64 image: {str(e)}",
-            details={"error": str(e)}
+            "Base64 이미지 디코딩에 실패했습니다.",
+            details={"error": str(e)},
         ) from e
 
 

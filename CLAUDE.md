@@ -150,3 +150,22 @@ uv run python tests/test_image_upload_research.py
 - `docs/progress.md` - 상세 진행 상황
 - `docs/user-guide.md` - 사용자 가이드
 - `docs/image-upload-research.md` - 이미지 업로드 조사 결과
+
+## 코드 품질
+
+### 타입 검사 (pyright)
+- `pyright`는 전역 설치 필요 (`npm install -g pyright`), uv 프로젝트 의존성 아님
+- Python 파일 수정 후 반드시 실행:
+  ```bash
+  pyright src/
+  ```
+- 오류가 있으면 수정 후 재확인 (현재 기존 오류 22개 존재 — 신규 작업으로 오류가 **늘어나지 않도록** 유지)
+
+### 린트 검사 (ruff)
+- 파일 수정 후 반드시 실행:
+  ```bash
+  ruff check src/
+  ```
+- ruff 규칙: `E`, `F`, `I`, `B`, `C`, `S` (pyproject.toml 설정 기준)
+- 현재 기존 오류 57개 존재 — 신규 작업으로 오류가 **늘어나지 않도록** 유지
+- 자동 수정 가능한 항목: `ruff check src/ --fix`

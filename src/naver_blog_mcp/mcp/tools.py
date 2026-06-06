@@ -4,7 +4,8 @@
 """
 
 import logging
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 from playwright.async_api import Page
 
@@ -23,7 +24,6 @@ def build_tool_metadata(name: str, description: str, input_schema: dict) -> dict
         "name": name,
         "description": description,
         "inputSchema": input_schema,
-        "input_schema": input_schema,
     }
 
 
@@ -54,7 +54,10 @@ TOOLS_METADATA = {
                 "images": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "첨부할 이미지 파일 경로 목록 (선택). 본문 작성 전에 이미지를 먼저 업로드합니다.",
+                    "description": (
+                        "첨부할 이미지 파일 경로 목록 (선택). "
+                        "본문 작성 전에 이미지를 먼저 업로드합니다."
+                    ),
                 },
                 "publish": {
                     "type": "boolean",
@@ -141,27 +144,32 @@ async def handle_create_post(
         NaverBlogPostError: 글 작성 실패 시
         UploadError: 이미지 업로드 실패 시
     """
+    images_uploaded = 0
     try:
         logger.info(f"글 작성 시작: {title}")
-        images_uploaded = 0
 
         # 1. 이미지 업로드 (본문 작성 전)
         if images:
             logger.info(f"이미지 업로드 시작: {len(images)}개")
             try:
-                upload_result = await upload_images(page, images)
+                image_paths: List[Union[str, Path]] = [Path(p) for p in images]
+                upload_result = await upload_images(page, image_paths)
                 images_uploaded = len(upload_result.get("uploaded", []))
 
                 if upload_result.get("failed"):
-                    logger.warning(f"일부 이미지 업로드 실패: {upload_result['failed']}")
+                    logger.warning(
+                        "일부 이미지 업로드 실패: %s", upload_result["failed"]
+                    )
 
-                logger.info(f"이미지 업로드 완료: {images_uploaded}/{len(images)}개")
+                logger.info(
+                    "이미지 업로드 완료: %d/%d개", images_uploaded, len(images)
+                )
 
             except UploadError as e:
                 logger.error(f"이미지 업로드 실패: {e}")
                 return {
                     "success": False,
-                    "message": f"이미지 업로드 실패: {str(e)}",
+                    "message": "이미지 업로드 중 오류가 발생했습니다.",
                     "post_url": None,
                     "title": title,
                     "images_uploaded": 0,
@@ -182,14 +190,18 @@ async def handle_create_post(
         # 결과에 이미지 정보 추가
         result["images_uploaded"] = images_uploaded
 
-        logger.info(f"글 작성 완료: {result.get('post_url', 'N/A')} (이미지 {images_uploaded}개)")
+        logger.info(
+            "글 작성 완료: %s (이미지 %d개)",
+            result.get("post_url", "N/A"),
+            images_uploaded,
+        )
         return result
 
     except NaverBlogPostError as e:
         logger.error(f"글 작성 실패: {e}")
         return {
             "success": False,
-            "message": f"글 작성 중 오류가 발생했습니다: {str(e)}",
+            "message": "글 작성 중 오류가 발생했습니다.",
             "post_url": None,
             "title": title,
             "images_uploaded": images_uploaded,
@@ -197,7 +209,7 @@ async def handle_create_post(
     except Exception as e:
         # Playwright 에러를 커스텀 에러로 변환
         custom_error = await handle_playwright_error(e, page, "create_post")
-        logger.error(f"예상치 못한 오류: {custom_error}", exc_info=True)
+        logger.error("예상치 못한 오류: %s", custom_error)
 
         # 재시도 가능한 에러면 다시 발생시켜서 tenacity가 재시도하도록
         if isinstance(custom_error, NaverBlogError):
@@ -205,7 +217,7 @@ async def handle_create_post(
 
         return {
             "success": False,
-            "message": f"예상치 못한 오류: {str(custom_error)}",
+            "message": "예상치 못한 오류가 발생했습니다.",
             "post_url": None,
             "title": title,
         }
@@ -271,9 +283,9 @@ async def handle_list_categories(page: Page) -> Dict[str, Any]:
 
     except Exception as e:
         custom_error = await handle_playwright_error(e, page, "list_categories")
-        logger.error(f"카테고리 조회 중 예외 발생: {custom_error}", exc_info=True)
+        logger.error("카테고리 조회 중 예외 발생: %s", custom_error)
         return {
             "success": False,
-            "message": f"카테고리 조회 실패: {str(custom_error)}",
+            "message": "카테고리 조회 중 오류가 발생했습니다.",
             "categories": []
         }
