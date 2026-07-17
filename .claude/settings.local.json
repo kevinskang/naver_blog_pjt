@@ -22,7 +22,16 @@
       "Bash(uv add:*)",
       "Bash(claude mcp *)",
       "Bash(python3 -m json.tool)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(pip install *)",
+      "Bash(pip search *)",
+      "Bash(pip index *)",
+      "Bash(uv python *)",
+      "Bash($PYTHON313 *)",
+      "Bash(uv pip *)",
+      "Bash(python3 -c ' *)",
+      "Bash(ruff --version)",
+      "Bash(ruff check *)"
     ],
     "deny": [],
     "ask": []

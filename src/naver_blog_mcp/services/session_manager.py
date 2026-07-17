@@ -59,6 +59,7 @@ class SessionManager:
         password: str,
         storage_path: str = config.SESSION_STORAGE_PATH,
         session_validity_hours: int = config.SESSION_VALIDITY_HOURS,
+        account_id: Optional[str] = None,
     ):
         """세션 매니저 초기화."""
         self.user_id = user_id
@@ -67,6 +68,17 @@ class SessionManager:
         self.storage_path = storage_path
         self.session_validity_hours = session_validity_hours
         self.last_login_time: Optional[datetime] = None
+        self.account_id = account_id
+
+    def _get_password(self) -> str:
+        """계정별 비밀번호를 환경 변수에서 읽어옵니다 (메모리 저장 방지)."""
+        import os
+
+        if not self.account_id:
+            from ..config import config
+
+            return config.NAVER_BLOG_PASSWORD
+        return os.getenv(f"NAVER_ACCOUNT_{self.account_id.upper()}_PASSWORD", "")
 
     def is_session_file_valid(self) -> bool:
         """
@@ -152,10 +164,11 @@ class SessionManager:
         page = await context.new_page()
 
         try:
+            current_password = self._get_password()
             result = await login_to_naver(
                 page=page,
                 user_id=self.user_id,
-                password=config.NAVER_BLOG_PASSWORD,  # 메모리 저장 없이 직접 참조
+                password=current_password,  # 메모리 저장 없이 직접 참조
                 storage_state_path=self.storage_path,
                 headless=headless,
             )

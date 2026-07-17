@@ -2,6 +2,7 @@
 
 이 파일은 에디터 iframe을 찾고 반환하는 공통 함수를 제공합니다.
 """
+
 import logging
 from typing import List
 

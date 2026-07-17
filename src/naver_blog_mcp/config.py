@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -52,6 +53,22 @@ class Config:
     def is_debug(cls) -> bool:
         """DEBUG 로그 레벨 여부를 반환합니다."""
         return cls.LOG_LEVEL == "DEBUG"
+
+    @classmethod
+    def get_account_blog_id(cls, account_id: Optional[str]) -> str:
+        """계정 식별자에 해당하는 블로그 ID를 가져옵니다."""
+        if not account_id:
+            return cls.NAVER_BLOG_ID
+        import os
+
+        return os.getenv(f"NAVER_ACCOUNT_{account_id.upper()}_ID", "")
+
+    @classmethod
+    def get_session_path(cls, account_id: Optional[str]) -> str:
+        """계정 식별자에 해당하는 세션 파일 경로를 가져옵니다."""
+        if not account_id:
+            return cls.SESSION_STORAGE_PATH
+        return f"playwright-state/auth_{account_id}.json"
 
     @classmethod
     def validate(cls) -> None:

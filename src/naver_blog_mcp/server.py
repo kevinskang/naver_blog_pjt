@@ -17,9 +17,17 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from .config import config, get_browser_config
 from .mcp.tools import (
     TOOLS_METADATA,
+    handle_check_session,
     handle_create_post,
-    # handle_delete_post,  # 비활성화
+    handle_delete_comment,
+    handle_delete_post,
+    handle_edit_post,
+    handle_get_stats,
     handle_list_categories,
+    handle_list_comments,
+    handle_list_drafts,
+    handle_list_posts,
+    handle_publish_draft,
 )
 from .services.session_manager import SessionManager
 from .utils.trace_manager import trace_manager
@@ -38,6 +46,10 @@ class NaverBlogMCPServer:
         self.playwright = None
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
+
+        # 멀티 계정 컨텍스트 및 세션 매니저 풀 추가
+        self._extra_contexts = {}
+        self._extra_session_managers = {}
 
         # 설정 검증
         config.validate()
@@ -75,19 +87,56 @@ class NaverBlogMCPServer:
 
         logger.info(f"Registered {len(TOOLS_METADATA)} tools")
 
+    def _get_session_manager(self, account_id: Optional[str]) -> SessionManager:
+        if not account_id:
+            return self.session_manager
+        if account_id not in self._extra_session_managers:
+            import os
+            user_id = os.getenv(f"NAVER_ACCOUNT_{account_id.upper()}_ID", "")
+            password = os.getenv(f"NAVER_ACCOUNT_{account_id.upper()}_PASSWORD", "")
+            storage_path = f"playwright-state/auth_{account_id}.json"
+            self._extra_session_managers[account_id] = SessionManager(
+                user_id=user_id,
+                password=password,
+                storage_path=storage_path,
+                account_id=account_id
+            )
+        return self._extra_session_managers[account_id]
+
+    def _get_context(self, account_id: Optional[str]) -> Optional[BrowserContext]:
+        if not account_id:
+            return self.context
+        return self._extra_contexts.get(account_id)
+
+    def _set_context(
+        self, account_id: Optional[str], context: Optional[BrowserContext]
+    ) -> None:
+        if not account_id:
+            self.context = context
+        else:
+            self._extra_contexts[account_id] = context
+
     async def _handle_tool_call(self, name: str, arguments: dict) -> list[dict]:
         """툴 호출을 처리하고 결과를 MCP 메시지로 변환합니다."""
+        account_id = arguments.get("account_id")
         try:
-            await self._ensure_session()
+            if not account_id:
+                await self._ensure_session()
+            else:
+                await self._ensure_session_for(account_id)
 
-            if self.context:
-                await trace_manager.start_trace(self.context, name=name)
+            context = self._get_context(account_id)
+            if context:
+                await trace_manager.start_trace(context, name=name)
 
-            page = await self.get_page()
+            if not account_id:
+                page = await self.get_page()
+            else:
+                page = await self.get_page(account_id)
             result = await self._execute_tool(name, arguments, page)
 
-            if self.context:
-                await trace_manager.stop_trace(self.context, success=True)
+            if context:
+                await trace_manager.stop_trace(context, success=True)
 
             return [
                 {
@@ -98,8 +147,9 @@ class NaverBlogMCPServer:
 
         except Exception as e:
             logger.error(f"Tool execution error: {e}", exc_info=True)
-            if self.context:
-                await trace_manager.stop_trace(self.context, success=False)
+            context = self._get_context(account_id)
+            if context:
+                await trace_manager.stop_trace(context, success=False)
             return [
                 {
                     "type": "text",
@@ -118,13 +168,66 @@ class NaverBlogMCPServer:
                 tags=arguments.get("tags"),
                 images=arguments.get("images"),
                 publish=arguments.get("publish", True),
+                schedule_time=arguments.get("schedule_time"),
             )
-        # elif name == "naver_blog_delete_post":
-        #     return await handle_delete_post(page=page, post_url=arguments["post_url"])
+        elif name == "naver_blog_delete_post":
+            return await handle_delete_post(page=page, post_url=arguments["post_url"])
+        elif name == "naver_blog_check_session":
+            return await handle_check_session(page=page)
+        elif name == "naver_blog_edit_post":
+            return await handle_edit_post(
+                page=page,
+                post_url=arguments["post_url"],
+                title=arguments["title"],
+                content=arguments["content"],
+                category=arguments.get("category"),
+                tags=arguments.get("tags"),
+            )
+        elif name == "naver_blog_list_posts":
+            return await handle_list_posts(
+                page=page, limit=arguments.get("limit", 10)
+            )
+        elif name == "naver_blog_list_drafts":
+            return await handle_list_drafts(page=page)
+        elif name == "naver_blog_publish_draft":
+            return await handle_publish_draft(page=page, draft_id=arguments["draft_id"])
+        elif name == "naver_blog_list_comments":
+            return await handle_list_comments(
+                page=page, limit=arguments.get("limit", 10)
+            )
+        elif name == "naver_blog_delete_comment":
+            return await handle_delete_comment(
+                page=page, comment_id=arguments["comment_id"]
+            )
+        elif name == "naver_blog_get_stats":
+            return await handle_get_stats(page=page)
         elif name == "naver_blog_list_categories":
             return await handle_list_categories(page=page)
 
         raise ValueError(f"알 수 없는 Tool: {name}")
+
+    async def _ensure_session_for(self, account_id: Optional[str]) -> None:
+        """지정된 계정의 세션이 없거나 만료된 경우 재로그인 시도합니다."""
+        if not account_id:
+            await self._ensure_session()
+            return
+
+        context = self._get_context(account_id)
+        session_manager = self._get_session_manager(account_id)
+        if not context:
+            logger.info(f"세션 없음 ({account_id}) — 로그인 재시도 중...")
+            if not await self._try_init_session_for(account_id):
+                raise RuntimeError(
+                    f"네이버 로그인에 실패했습니다 ({account_id}). "
+                    f"환경 변수 설정을 확인하거나 HEADLESS=false로 설정 후 수동 CAPTCHA 해제를 진행해 주세요."  # noqa: E501
+                )
+        else:
+            if not self.browser:
+                raise RuntimeError("브라우저가 초기화되지 않았습니다.")
+            refreshed = await session_manager.refresh_session_if_needed(
+                self.browser, context, headless=config.HEADLESS
+            )
+            self._set_context(account_id, refreshed)
 
     async def _ensure_session(self) -> None:
         """세션이 없거나 만료된 경우 재로그인 시도합니다."""
@@ -137,7 +240,8 @@ class NaverBlogMCPServer:
                     "HEADLESS=false로 설정 후 CAPTCHA를 수동으로 처리해주세요."
                 )
         else:
-            # 이미 context가 있어도 만료되었을 수 있으므로 검증
+            if not self.browser:
+                raise RuntimeError("브라우저가 초기화되지 않았습니다.")
             self.context = await self.session_manager.refresh_session_if_needed(
                 self.browser, self.context, headless=config.HEADLESS
             )
@@ -158,8 +262,33 @@ class NaverBlogMCPServer:
             "Browser launched (headless=%s)", browser_config.get("headless", True)
         )
 
-        # 세션 초기화 시도 (실패해도 서버는 계속 실행)
+        # 기본 세션 초기화 시도
         await self._try_init_session()
+
+    async def _try_init_session_for(self, account_id: Optional[str]) -> bool:
+        if not account_id:
+            return await self._try_init_session()
+
+        if not self.browser:
+            logger.warning(
+                f"세션 초기화 실패 ({account_id}): 브라우저가 초기화되지 않았습니다."
+            )
+            return False
+
+        session_manager = self._get_session_manager(account_id)
+        try:
+            context = await session_manager.get_or_create_session(
+                self.browser, headless=config.HEADLESS
+            )
+            self._set_context(account_id, context)
+            logger.info(f"Browser context initialized ({account_id})")
+            return True
+        except Exception as e:
+            logger.warning(
+                f"세션 초기화 실패 ({account_id}) (Tool 호출 시 재시도됩니다): {e}"  # noqa: E501
+            )
+            self._set_context(account_id, None)
+            return False
 
     async def _try_init_session(self) -> bool:
         """세션 초기화를 시도합니다. 실패해도 서버를 종료하지 않습니다.
@@ -167,6 +296,10 @@ class NaverBlogMCPServer:
         Returns:
             초기화 성공 여부
         """
+        if not self.browser:
+            logger.warning("세션 초기화 실패: 브라우저가 초기화되지 않았습니다.")
+            return False
+
         try:
             self.context = await self.session_manager.get_or_create_session(
                 self.browser, headless=config.HEADLESS
@@ -184,6 +317,15 @@ class NaverBlogMCPServer:
         """리소스 정리."""
         logger.info("Cleaning up resources...")
 
+        for account_id, context in list(self._extra_contexts.items()):
+            if context:
+                try:
+                    await context.close()
+                    logger.info(f"Browser context closed ({account_id})")
+                except Exception as e:
+                    logger.warning(f"Error closing context ({account_id}): {e}")
+        self._extra_contexts.clear()
+
         if self.context:
             await self.context.close()
             logger.info("Browser context closed")
@@ -196,31 +338,26 @@ class NaverBlogMCPServer:
             await self.playwright.stop()
             logger.info("Playwright stopped")
 
-    async def get_page(self) -> Page:
-        """세션을 확인하고 페이지를 반환합니다. 세션이 없으면 로그인을 재시도합니다.
-
-        Returns:
-            Playwright Page 객체
-
-        Raises:
-            RuntimeError: 로그인 재시도 후에도 세션 생성에 실패한 경우
-        """
-        if not self.context:
-            logger.info("세션 없음 — 로그인 재시도 중...")
-            success = await self._try_init_session()
-            if not success or not self.context:
+    async def get_page(self, account_id: Optional[str] = None) -> Page:
+        """세션을 확인하고 페이지를 반환합니다."""
+        context = self._get_context(account_id)
+        if not context:
+            logger.info(f"세션 없음 ({account_id or 'default'}) — 로그인 재시도 중...")
+            if not account_id:
+                success = await self._try_init_session()
+            else:
+                success = await self._try_init_session_for(account_id)
+            context = self._get_context(account_id)
+            if not success or not context:
                 raise RuntimeError(
-                    "네이버 로그인에 실패했습니다. "
-                    ".env 파일의 NAVER_BLOG_ID, NAVER_BLOG_PASSWORD를 확인하거나 "
-                    "HEADLESS=false로 설정 후 CAPTCHA를 수동으로 처리해주세요."
+                    f"네이버 로그인에 실패했습니다 ({account_id or 'default'})."
                 )
 
-        # 기존 페이지가 있으면 재사용, 없으면 새로 생성
-        pages = self.context.pages
+        pages = context.pages
         if pages:
             return pages[0]
         else:
-            return await self.context.new_page()
+            return await context.new_page()
 
     async def run(self):
         """MCP 서버 실행."""

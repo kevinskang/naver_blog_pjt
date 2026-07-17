@@ -205,7 +205,7 @@ async def verify_login_session(page: Page) -> bool:
         # blog.naver.com 도메인에 있고 쿠키가 있으면 로그인된 것으로 간주
         if "blog.naver.com" in current_url:
             cookies = await page.context.cookies()
-            naver_cookies = [c for c in cookies if 'naver.com' in c['domain']]
+            naver_cookies = [c for c in cookies if "naver.com" in c["domain"]]
             return len(naver_cookies) > 0
 
         return False

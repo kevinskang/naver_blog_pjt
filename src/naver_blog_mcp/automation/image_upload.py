@@ -96,8 +96,7 @@ async def click_image_button(frame: Frame, page: Optional[Page] = None) -> None:
                 logger.debug(f"Page button click failed for {selector}: {e}")
 
     raise ElementNotFoundError(
-        "Image button not found",
-        details={"selectors": IMAGE_BUTTON_SELECTORS}
+        "Image button not found", details={"selectors": IMAGE_BUTTON_SELECTORS}
     )
 
 
@@ -146,7 +145,7 @@ async def wait_for_upload_complete(
             details={
                 "timeout": timeout,
                 "selectors": UPLOADED_IMAGE_SELECTORS,
-            }
+            },
         )
 
     except Exception as e:
@@ -158,24 +157,30 @@ def _validate_image_path(image_path: Path) -> None:
     """Validate image path, size and format. Raises UploadError on failure."""
     if not image_path.exists():
         raise UploadError(
-            f"Image file not found: {image_path}",
-            details={"path": str(image_path)}
+            f"Image file not found: {image_path}", details={"path": str(image_path)}
         )
 
     file_size = image_path.stat().st_size
     if file_size > 10 * 1024 * 1024:
         raise UploadError(
             f"Image file too large: {file_size / 1024 / 1024:.2f}MB (max 10MB)",
-            details={"path": str(image_path), "size": file_size}
+            details={"path": str(image_path), "size": file_size},
         )
 
     supported_formats = [
-        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.heic', '.heif', '.webp'
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".bmp",
+        ".heic",
+        ".heif",
+        ".webp",
     ]
     if image_path.suffix.lower() not in supported_formats:
         raise UploadError(
             f"Unsupported image format: {image_path.suffix}",
-            details={"path": str(image_path), "format": image_path.suffix}
+            details={"path": str(image_path), "format": image_path.suffix},
         )
 
 
@@ -215,7 +220,7 @@ async def _set_file_input_and_submit(
     if file_input is None:
         raise ElementNotFoundError(
             "File input not found after clicking image button",
-            details={"selectors": FILE_INPUT_SELECTORS}
+            details={"selectors": FILE_INPUT_SELECTORS},
         )
 
     await file_input.set_input_files(str(image_path.absolute()))
@@ -290,13 +295,13 @@ async def upload_image(
         custom_error = await handle_playwright_error(e, page, "upload_image")
         raise UploadError(
             f"Failed to upload image: {str(custom_error)}",
-            details={"path": str(image_path), "error": str(custom_error)}
+            details={"path": str(image_path), "error": str(custom_error)},
         ) from e
 
 
 _DATA_URL_RE = re.compile(r"^data:(image/[\w.+-]+);base64,(.+)$", re.DOTALL)
 _MIME_TO_EXT: dict[str, str] = {
-    "image/jpeg": ".jpg",
+    "image/jpeg": ".jpeg",
     "image/jpg": ".jpg",
     "image/png": ".png",
     "image/gif": ".gif",
@@ -339,7 +344,7 @@ def decode_base64_image(base64_string: str) -> tuple[bytes, str]:
         raise
     except Exception as e:
         raise UploadError(
-            "Base64 이미지 디코딩에 실패했습니다.",
+            "Failed to decode base64 image (Base64 이미지 디코딩에 실패했습니다.)",
             details={"error": str(e)},
         ) from e
 
@@ -400,7 +405,7 @@ async def upload_base64_image(
         custom_error = await handle_playwright_error(e, page, "upload_base64_image")
         raise UploadError(
             f"Failed to upload base64 image: {str(custom_error)}",
-            details={"error": str(custom_error)}
+            details={"error": str(custom_error)},
         ) from e
 
     finally:
@@ -466,10 +471,7 @@ async def upload_images(
     success = len(uploaded) > 0 and len(failed) == 0
 
     if len(failed) == len(image_paths):
-        raise UploadError(
-            "All images failed to upload",
-            details={"failed": failed}
-        )
+        raise UploadError("All images failed to upload", details={"failed": failed})
 
     return {
         "success": success,

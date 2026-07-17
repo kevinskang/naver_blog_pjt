@@ -45,7 +45,7 @@ alternative_selectors = [
 
 **속성**:
 - Tag: `BUTTON`
-- Classes: `se-image-toolbar-button se-document-toolbar-basic-button se-text-icon-toolbar-button __se-sentry`
+- Classes: `se-image-toolbar-button se-document-toolbar-basic-button`
 - Data-Name: `image`
 
 ### 3. 파일 업로드 Input
@@ -76,7 +76,6 @@ file_input_selector = "input[type='file']#hidden-file"
 ### Step 1: iframe 접근
 
 ```python
-# iframe 찾기
 iframe_element = await page.wait_for_selector("iframe#mainFrame")
 main_frame = await iframe_element.content_frame()
 ```
@@ -84,7 +83,6 @@ main_frame = await iframe_element.content_frame()
 ### Step 2: 이미지 버튼 클릭
 
 ```python
-# 사진 버튼 클릭
 photo_button = main_frame.locator("button[data-name='image']")
 await photo_button.click()
 await asyncio.sleep(1)  # 파일 input 생성 대기
@@ -93,41 +91,22 @@ await asyncio.sleep(1)  # 파일 input 생성 대기
 ### Step 3: 파일 업로드
 
 ```python
-# 파일 input 찾기
 file_input = main_frame.locator("input[type='file']#hidden-file")
-
-# 파일 업로드
 await file_input.set_input_files("path/to/image.jpg")
 ```
 
 ### Step 4: 업로드 완료 대기
 
 ```python
-# 업로드된 이미지가 에디터에 삽입될 때까지 대기
-# (구체적인 셀렉터는 추가 조사 필요)
 await main_frame.wait_for_selector(".se-image-resource", timeout=10000)
 ```
 
 ## 추가 조사 필요 사항
 
-1. **업로드 완료 감지**
-   - 이미지 업로드 후 에디터에 삽입되는 요소의 셀렉터
-   - 업로드 진행 상태 표시 요소
-   - 업로드 완료/실패 감지 방법
-
-2. **이미지 옵션**
-   - 이미지 크기 조절 가능 여부
-   - 이미지 정렬 (좌/중/우) 설정
-   - 대체 텍스트(alt text) 설정
-
-3. **다중 이미지 업로드**
-   - 한 번에 여러 이미지 업로드 가능 여부
-   - 이미지 순서 제어 방법
-
-4. **에러 처리**
-   - 용량 제한 (파일 크기, 전체 용량)
-   - 지원하지 않는 포맷 업로드 시 에러 메시지
-   - 네트워크 에러 시 재시도 로직
+1. **업로드 완료 감지**: 이미지 업로드 후 에디터에 삽입되는 요소의 셀렉터
+2. **이미지 옵션**: 크기 조절, 정렬 설정
+3. **다중 이미지 업로드**: 한 번에 여러 이미지 업로드 가능 여부
+4. **에러 처리**: 용량 제한 (10MB), 지원하지 않는 포맷
 
 ## 구현 우선순위
 
@@ -136,12 +115,10 @@ await main_frame.wait_for_selector(".se-image-resource", timeout=10000)
 - [x] 이미지 버튼 찾기
 - [x] 파일 input 찾기
 - [ ] 단일 이미지 업로드 구현
-- [ ] 업로드 완료 감지
 
 ### Phase 2 (Day 12) - 고급 기능
 - [ ] 다중 이미지 업로드
-- [ ] 이미지 옵션 설정 (크기, 정렬)
-- [ ] 에러 처리 및 재시도
+- [ ] 이미지 옵션 설정
 - [ ] Base64 이미지 지원
 
 ## 결론

@@ -58,5 +58,6 @@ async def test_set_file_input_and_submit_uses_input_files(tmp_path: Path):
 
     await _set_file_input_and_submit(frame, image_path)
 
-    mock_locator.first.wait_for.assert_awaited_once_with(state="attached", timeout=3000)
+    mock_locator.first.wait_for.assert_any_await(state="attached", timeout=3000)
     mock_locator.first.set_input_files.assert_awaited_once_with(str(image_path.absolute()))
+

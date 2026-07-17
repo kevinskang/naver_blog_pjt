@@ -83,3 +83,15 @@ class UIChangedError(NaverBlogError):
         self.selector = selector
         details = {"selector": selector} if selector else {}
         super().__init__(message, details)
+
+
+class CommentError(NaverBlogError):
+    """댓글 관리 관련 에러."""
+
+    pass
+
+
+class StatsError(NaverBlogError):
+    """통계 조회 관련 에러."""
+
+    pass

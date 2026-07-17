@@ -51,8 +51,7 @@ def _classify_playwright_error(
     error: Exception,
     error_str: str,
 ) -> Type[NaverBlogError]:
-    """에러 문자열을 분석해 매핑되는 커스텀 예외 클래스를 반환합니다.
-    """
+    """에러 문자열을 분석해 매핑되는 커스텀 예외 클래스를 반환합니다."""
     if isinstance(error, PlaywrightTimeoutError):
         return NaverBlogTimeoutError
 
@@ -70,8 +69,7 @@ async def handle_playwright_error(
     context: str = "unknown",
     save_screenshot: bool = True,
 ) -> Exception:
-    """Playwright 에러를 커스텀 에러로 변환하고 스크린샷/HTML을 저장합니다.
-    """
+    """Playwright 에러를 커스텀 에러로 변환하고 스크린샷/HTML을 저장합니다."""
     error_str = str(error)
     error_type = type(error).__name__
 
@@ -82,39 +80,30 @@ async def handle_playwright_error(
 
     if save_screenshot and page is not None:
         # 스크린샷과 HTML을 병렬로 저장 (Phase 4 성능 개선)
-        screenshot_bytes, html_content = await asyncio.gather(
-            _capture_screenshot(page),
-            _capture_html(page),
+        screenshot_result, html_result = await asyncio.gather(
+            save_error_screenshot(page, context, error_type),
+            save_page_html(page, context),
             return_exceptions=True,
         )
 
-        if isinstance(screenshot_bytes, bytes):
-            screenshot_path = _write_file(
-                Path("playwright-state/screenshots"),
-                f"error_{context}_{error_type}",
-                ".png",
-                screenshot_bytes,
-                binary=True,
-            )
+        if isinstance(screenshot_result, str):
+            screenshot_path = screenshot_result
             logger.info("Screenshot saved: %s", screenshot_path)
         else:
-            logger.warning("Failed to capture screenshot: %s", screenshot_bytes)
+            logger.warning("Failed to capture screenshot: %s", screenshot_result)
 
-        if isinstance(html_content, str):
-            page_html_path = _write_file(
-                Path("playwright-state/html"),
-                f"page_{context}",
-                ".html",
-                html_content.encode("utf-8"),
-                binary=True,
-            )
+        if isinstance(html_result, str):
+            page_html_path = html_result
             logger.info("Page HTML saved: %s", page_html_path)
         else:
-            logger.warning("Failed to capture HTML: %s", html_content)
+            logger.warning("Failed to capture HTML: %s", html_result)
 
     exc_class = _classify_playwright_error(error, error_str)
     details = _make_error_details(
-        context, screenshot_path, page_html_path, error_str,
+        context,
+        screenshot_path,
+        page_html_path,
+        error_str,
         error_type if exc_class is NaverBlogError else None,
     )
     msg_prefix = {
@@ -143,8 +132,7 @@ def _write_file(
     data: bytes,
     binary: bool = True,
 ) -> str:
-    """타임스탬프 기반 파일을 directory에 저장하고 경로를 반환합니다.
-    """
+    """타임스탬프 기반 파일을 directory에 저장하고 경로를 반환합니다."""
     directory.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = directory / f"{prefix}_{timestamp}{suffix}"
@@ -190,7 +178,7 @@ def is_retryable_error(error: Exception) -> bool:
     # 재시도 가능한 에러 타입
     retryable_types = (
         NetworkError,
-        TimeoutError,
+        NaverBlogTimeoutError,
         NavigationError,
     )
 

@@ -10,8 +10,18 @@ from typing import Any, Dict, List, Optional, Union
 from playwright.async_api import Page
 
 from ..automation.category_actions import get_categories
+from ..automation.comment_actions import delete_comment, list_comments
 from ..automation.image_upload import upload_images
-from ..automation.post_actions import NaverBlogPostError, create_blog_post
+from ..automation.post_actions import (
+    NaverBlogPostError,
+    create_blog_post,
+    delete_blog_post,
+    edit_blog_post,
+    list_blog_posts,
+    list_draft_posts,
+    publish_draft,
+)
+from ..automation.stats_actions import get_blog_stats
 from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import NaverBlogError, UploadError
 from ..utils.retry import retry_on_error
@@ -20,17 +30,27 @@ logger = logging.getLogger(__name__)
 
 
 def build_tool_metadata(name: str, description: str, input_schema: dict) -> dict:
+    # 모든 도구에 account_id 매개변수 자동 주입 (멀티 계정 지원)
+    if "properties" in input_schema:
+        input_schema["properties"]["account_id"] = {
+            "type": "string",
+            "description": (
+                "네이버 계정 식별자 (선택, 지정 시 "
+                "NAVER_ACCOUNT_{ID}_ID/PASSWORD 환경변수 사용)"
+            ),
+        }
     return {
         "name": name,
         "description": description,
         "inputSchema": input_schema,
+        "input_schema": input_schema,
     }
 
 
 TOOLS_METADATA = {
     "naver_blog_create_post": build_tool_metadata(
         "naver_blog_create_post",
-        "네이버 블로그에 새 글을 작성합니다. 이미지 첨부도 지원합니다.",
+        "네이버 블로그에 새 글을 작성합니다. 이미지 첨부 및 예약 발행도 지원합니다.",
         {
             "type": "object",
             "properties": {
@@ -64,25 +84,144 @@ TOOLS_METADATA = {
                     "description": "즉시 발행 여부 (기본: true, false면 임시저장)",
                     "default": True,
                 },
+                "schedule_time": {
+                    "type": "string",
+                    "description": "예약 발행 시간 (선택, 형식: YYYY-MM-DD HH:MM)",
+                },
             },
             "required": ["title", "content"],
         },
     ),
-    # NOTE: 글 삭제 기능은 일단 비활성화 (필요시 추후 구현)
-    # "naver_blog_delete_post": build_tool_metadata(
-    #     "naver_blog_delete_post",
-    #     "네이버 블로그의 글을 삭제합니다.",
-    #     {
-    #         "type": "object",
-    #         "properties": {
-    #             "post_url": {
-    #                 "type": "string",
-    #                 "description": "삭제할 글의 URL",
-    #             },
-    #         },
-    #         "required": ["post_url"],
-    #     },
-    # ),
+    "naver_blog_delete_post": build_tool_metadata(
+        "naver_blog_delete_post",
+        "네이버 블로그의 글을 삭제합니다.",
+        {
+            "type": "object",
+            "properties": {
+                "post_url": {
+                    "type": "string",
+                    "description": "삭제할 글의 URL",
+                },
+            },
+            "required": ["post_url"],
+        },
+    ),
+    "naver_blog_check_session": build_tool_metadata(
+        "naver_blog_check_session",
+        "현재 네이버 로그인 세션이 유효한지 확인하고 상태를 반환합니다.",
+        {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    "naver_blog_edit_post": build_tool_metadata(
+        "naver_blog_edit_post",
+        "이미 발행된 블로그 글을 수정합니다.",
+        {
+            "type": "object",
+            "properties": {
+                "post_url": {
+                    "type": "string",
+                    "description": "수정할 글의 URL",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "새로운 글 제목",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "새로운 글 본문 내용",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "수정할 카테고리 이름 (선택)",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "수정할 태그 목록 (선택)",
+                },
+            },
+            "required": ["post_url", "title", "content"],
+        },
+    ),
+    "naver_blog_list_posts": build_tool_metadata(
+        "naver_blog_list_posts",
+        "발행된 블로그 글 목록을 조회합니다.",
+        {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "조회할 글 수 (기본: 10, 최대: 30)",
+                    "default": 10,
+                },
+            },
+            "required": [],
+        },
+    ),
+    "naver_blog_list_drafts": build_tool_metadata(
+        "naver_blog_list_drafts",
+        "네이버 블로그의 임시저장 글 목록을 조회합니다.",
+        {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    "naver_blog_publish_draft": build_tool_metadata(
+        "naver_blog_publish_draft",
+        "임시저장된 글을 발행합니다.",
+        {
+            "type": "object",
+            "properties": {
+                "draft_id": {
+                    "type": "string",
+                    "description": "발행할 임시저장 글의 식별자(ID)",
+                },
+            },
+            "required": ["draft_id"],
+        },
+    ),
+    "naver_blog_list_comments": build_tool_metadata(
+        "naver_blog_list_comments",
+        "최신 댓글 목록을 가져옵니다.",
+        {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "가져올 댓글 수 (기본: 10)",
+                    "default": 10,
+                },
+            },
+            "required": [],
+        },
+    ),
+    "naver_blog_delete_comment": build_tool_metadata(
+        "naver_blog_delete_comment",
+        "특정 댓글을 삭제합니다.",
+        {
+            "type": "object",
+            "properties": {
+                "comment_id": {
+                    "type": "string",
+                    "description": "삭제할 댓글 식별자(ID)",
+                },
+            },
+            "required": ["comment_id"],
+        },
+    ),
+    "naver_blog_get_stats": build_tool_metadata(
+        "naver_blog_get_stats",
+        "블로그 방문자 수 및 조회수 통계를 가져옵니다.",
+        {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
     "naver_blog_list_categories": build_tool_metadata(
         "naver_blog_list_categories",
         "네이버 블로그의 카테고리 목록을 가져옵니다.",
@@ -118,6 +257,7 @@ async def handle_create_post(
     tags: Optional[list[str]] = None,
     images: Optional[list[str]] = None,
     publish: bool = True,
+    schedule_time: Optional[str] = None,
 ) -> Dict[str, Any]:
     """네이버 블로그에 새 글을 작성합니다.
 
@@ -129,20 +269,10 @@ async def handle_create_post(
         tags: 태그 목록 (선택)
         images: 첨부할 이미지 파일 경로 목록 (선택)
         publish: 즉시 발행 여부 (기본: True, False면 임시저장)
+        schedule_time: 예약 발행 시간 (선택)
 
     Returns:
         작업 결과 딕셔너리
-        {
-            "success": bool,
-            "message": str,
-            "post_url": str (발행 시),
-            "title": str,
-            "images_uploaded": int (업로드된 이미지 수)
-        }
-
-    Raises:
-        NaverBlogPostError: 글 작성 실패 시
-        UploadError: 이미지 업로드 실패 시
     """
     images_uploaded = 0
     try:
@@ -161,9 +291,7 @@ async def handle_create_post(
                         "일부 이미지 업로드 실패: %s", upload_result["failed"]
                     )
 
-                logger.info(
-                    "이미지 업로드 완료: %d/%d개", images_uploaded, len(images)
-                )
+                logger.info("이미지 업로드 완료: %d/%d개", images_uploaded, len(images))
 
             except UploadError as e:
                 logger.error(f"이미지 업로드 실패: {e}")
@@ -180,14 +308,14 @@ async def handle_create_post(
             page=page,
             title=title,
             content=content,
-            blog_id=None,  # 현재 로그인된 블로그 사용
+            blog_id=None,
             use_html=False,
-            wait_for_completion=publish,
+            wait_for_completion=publish and (not schedule_time),
             category=category,
             tags=tags,
+            schedule_time=schedule_time,
         )
 
-        # 결과에 이미지 정보 추가
         result["images_uploaded"] = images_uploaded
 
         logger.info(
@@ -207,11 +335,9 @@ async def handle_create_post(
             "images_uploaded": images_uploaded,
         }
     except Exception as e:
-        # Playwright 에러를 커스텀 에러로 변환
         custom_error = await handle_playwright_error(e, page, "create_post")
         logger.error("예상치 못한 오류: %s", custom_error)
 
-        # 재시도 가능한 에러면 다시 발생시켜서 tenacity가 재시도하도록
         if isinstance(custom_error, NaverBlogError):
             raise custom_error from e
 
@@ -223,29 +349,161 @@ async def handle_create_post(
         }
 
 
-# NOTE: 글 삭제 기능은 일단 비활성화 (필요시 추후 구현)
-# async def handle_delete_post(page: Page, post_url: str) -> Dict[str, Any]:
-#     """네이버 블로그의 글을 삭제합니다.
-#
-#     Args:
-#         page: Playwright Page 객체 (로그인된 상태)
-#         post_url: 삭제할 글의 URL
-#
-#     Returns:
-#         작업 결과 딕셔너리
-#         {
-#             "success": bool,
-#             "message": str,
-#             "post_url": str
-#         }
-#     """
-#     # TODO: 필요시 추후 구현
-#     logger.warning("handle_delete_post: 아직 구현되지 않았습니다.")
-#     return {
-#         "success": False,
-#         "message": "글 삭제 기능은 아직 구현되지 않았습니다.",
-#         "post_url": post_url,
-#     }
+@retry_on_error
+async def handle_delete_post(page: Page, post_url: str) -> Dict[str, Any]:
+    """네이버 블로그의 글을 삭제합니다."""
+    logger.info(f"글 삭제 시작: {post_url}")
+    try:
+        return await delete_blog_post(page, post_url)
+    except Exception as e:
+        custom_error = await handle_playwright_error(e, page, "delete_post")
+        logger.error("글 삭제 중 예외 발생: %s", custom_error)
+        return {
+            "success": False,
+            "message": f"글 삭제 중 오류가 발생했습니다: {str(custom_error)}",
+            "post_url": post_url,
+        }
+
+
+async def handle_check_session(page: Page) -> Dict[str, Any]:
+    """현재 로그인 세션의 유효성을 검사합니다."""
+    logger.info("세션 상태 검사 시작")
+    try:
+        from ..automation.login import verify_login_session
+
+        is_valid = await verify_login_session(page)
+        return {
+            "success": True,
+            "is_logged_in": is_valid,
+            "message": "세션이 유효합니다."
+            if is_valid
+            else "세션이 만료되었거나 로그인이 해제되었습니다.",
+        }
+    except Exception as e:
+        logger.error(f"세션 검사 중 예외 발생: {e}")
+        return {"success": False, "is_logged_in": False, "message": str(e)}
+
+
+@retry_on_error
+async def handle_edit_post(
+    page: Page,
+    post_url: str,
+    title: str,
+    content: str,
+    category: Optional[str] = None,
+    tags: Optional[list[str]] = None,
+) -> Dict[str, Any]:
+    """블로그 글을 수정합니다."""
+    logger.info(f"글 수정 시작: {post_url}")
+    try:
+        return await edit_blog_post(
+            page=page,
+            post_url=post_url,
+            title=title,
+            content=content,
+            category=category,
+            tags=tags,
+        )
+    except Exception as e:
+        custom_error = await handle_playwright_error(e, page, "edit_post")
+        logger.error("글 수정 중 예외 발생: %s", custom_error)
+        return {
+            "success": False,
+            "message": f"글 수정 중 오류가 발생했습니다: {str(custom_error)}",
+        }
+
+
+@retry_on_error
+async def handle_list_posts(page: Page, limit: int = 10) -> Dict[str, Any]:
+    """글 목록을 조회합니다."""
+    logger.info(f"글 목록 조회 시작 (limit: {limit})")
+    try:
+        return await list_blog_posts(page, limit=limit)
+    except Exception as e:
+        custom_error = await handle_playwright_error(e, page, "list_posts")
+        logger.error("글 목록 조회 중 예외 발생: %s", custom_error)
+        return {
+            "success": False,
+            "message": f"글 목록 조회 중 오류가 발생했습니다: {str(custom_error)}",
+            "posts": [],
+        }
+
+
+@retry_on_error
+async def handle_list_drafts(page: Page) -> Dict[str, Any]:
+    """임시저장 글 목록을 조회합니다."""
+    logger.info("임시저장 글 목록 조회 시작")
+    try:
+        return await list_draft_posts(page)
+    except Exception as e:
+        custom_error = await handle_playwright_error(e, page, "list_drafts")
+        logger.error("임시저장 목록 조회 중 예외 발생: %s", custom_error)
+        return {
+            "success": False,
+            "message": f"임시저장 목록 조회 중 오류가 발생했습니다: {str(custom_error)}",  # noqa: E501
+            "drafts": [],
+        }
+
+
+@retry_on_error
+async def handle_publish_draft(page: Page, draft_id: str) -> Dict[str, Any]:
+    """임시저장된 글을 발행합니다."""
+    logger.info(f"임시저장 글 발행 시작 (draft_id: {draft_id})")
+    try:
+        return await publish_draft(page, draft_id)
+    except Exception as e:
+        custom_error = await handle_playwright_error(e, page, "publish_draft")
+        logger.error("임시저장 발행 중 예외 발생: %s", custom_error)
+        return {
+            "success": False,
+            "message": f"임시저장 발행 중 오류가 발생했습니다: {str(custom_error)}",
+        }
+
+
+@retry_on_error
+async def handle_list_comments(page: Page, limit: int = 10) -> Dict[str, Any]:
+    """댓글 목록을 조회합니다."""
+    logger.info(f"댓글 목록 조회 시작 (limit: {limit})")
+    try:
+        return await list_comments(page, limit=limit)
+    except Exception as e:
+        custom_error = await handle_playwright_error(e, page, "list_comments")
+        logger.error("댓글 목록 조회 중 예외 발생: %s", custom_error)
+        return {
+            "success": False,
+            "message": f"댓글 목록 조회 중 오류가 발생했습니다: {str(custom_error)}",
+            "comments": [],
+        }
+
+
+@retry_on_error
+async def handle_delete_comment(page: Page, comment_id: str) -> Dict[str, Any]:
+    """댓글을 삭제합니다."""
+    logger.info(f"댓글 삭제 시작 (comment_id: {comment_id})")
+    try:
+        return await delete_comment(page, comment_id)
+    except Exception as e:
+        custom_error = await handle_playwright_error(e, page, "delete_comment")
+        logger.error("댓글 삭제 중 예외 발생: %s", custom_error)
+        return {
+            "success": False,
+            "message": f"댓글 삭제 중 오류가 발생했습니다: {str(custom_error)}",
+        }
+
+
+@retry_on_error
+async def handle_get_stats(page: Page) -> Dict[str, Any]:
+    """블로그 통계를 조회합니다."""
+    logger.info("블로그 통계 조회 시작")
+    try:
+        return await get_blog_stats(page)
+    except Exception as e:
+        custom_error = await handle_playwright_error(e, page, "get_stats")
+        logger.error("블로그 통계 조회 중 예외 발생: %s", custom_error)
+        return {
+            "success": False,
+            "message": f"블로그 통계 조회 중 오류가 발생했습니다: {str(custom_error)}",
+        }
 
 
 async def handle_list_categories(page: Page) -> Dict[str, Any]:
@@ -256,18 +514,6 @@ async def handle_list_categories(page: Page) -> Dict[str, Any]:
 
     Returns:
         작업 결과 딕셔너리
-        {
-            "success": bool,
-            "message": str,
-            "categories": [
-                {
-                    "name": str,
-                    "url": str,
-                    "categoryNo": str
-                },
-                ...
-            ]
-        }
     """
     logger.info("카테고리 목록 조회 시작")
 
@@ -287,5 +533,5 @@ async def handle_list_categories(page: Page) -> Dict[str, Any]:
         return {
             "success": False,
             "message": "카테고리 조회 중 오류가 발생했습니다.",
-            "categories": []
+            "categories": [],
         }
