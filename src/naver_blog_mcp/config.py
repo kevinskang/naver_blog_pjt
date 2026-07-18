@@ -41,10 +41,17 @@ class Config:
         "--disable-setuid-sandbox",
     ]
 
+    # Chrome/Chromium 버전 — Playwright 번들 Chromium과 반드시 일치시킨다.
+    # UA, stealth userAgentData, 실제 브라우저 버전이 불일치하면 안티봇이 즉시
+    # 탐지하므로 단일 상수로 관리한다. Playwright 업그레이드 시 이 값만 갱신하면
+    # USER_AGENT와 STEALTH_SCRIPT가 함께 반영된다. (현재 Playwright 1.55 = Chromium 140)
+    CHROME_MAJOR_VERSION: str = os.getenv("CHROME_MAJOR_VERSION", "140")
+    CHROME_FULL_VERSION: str = os.getenv("CHROME_FULL_VERSION", "140.0.0.0")
+
     USER_AGENT: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        f"Chrome/{CHROME_FULL_VERSION} Safari/537.36"
     )
 
     VIEWPORT: dict[str, int] = {"width": 1920, "height": 1080}

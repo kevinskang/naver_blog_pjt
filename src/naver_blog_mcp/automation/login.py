@@ -16,6 +16,42 @@ logger = logging.getLogger(__name__)
 
 _LOGIN_ERROR_SELECTORS = [".error_message", ".error_txt", ".err_txt", "#error"]
 
+# 로그인 성공 시에만 발급되고 로그아웃 시 제거되는 네이버 인증 쿠키.
+# NNB 등 비로그인 상태에도 존재하는 쿠키로 판정하면 오탐(false positive)이
+# 발생하므로, 반드시 이 로그인 전용 쿠키의 존재로 세션 유효성을 판정한다.
+_LOGIN_COOKIE_NAMES = ("NID_AUT", "NID_SES")
+
+
+async def _has_login_cookies(page: Page) -> bool:
+    """로그인 전용 쿠키(NID_AUT/NID_SES) 존재 여부로 로그인 상태를 판정합니다."""
+    cookies = await page.context.cookies()
+    cookie_names = {c.get("name") for c in cookies}
+    return any(name in cookie_names for name in _LOGIN_COOKIE_NAMES)
+
+
+async def _dismiss_device_registration(page: Page) -> None:
+    """로그인 직후 나타날 수 있는 '새로운 기기 등록' 페이지를 '등록안함'으로 넘깁니다.
+
+    로그인 자체는 이미 성공(쿠키 발급 완료)한 상태이므로, 이 페이지가 없으면
+    아무 것도 하지 않고, 있으면 등록하지 않고 진행합니다.
+    """
+    dontsave_selectors = [
+        "#new\\.dontsave",
+        "a#new\\.dontsave",
+        "button:has-text('등록안함')",
+        "a:has-text('등록안함')",
+    ]
+    for selector in dontsave_selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() > 0 and await locator.is_visible():
+                await locator.click(timeout=2000)
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                logger.debug("기기 등록 페이지를 '등록안함'으로 넘김")
+                return
+        except Exception:  # noqa: S110
+            continue
+
 
 async def _check_login_error(page: Page) -> Optional[str]:
     """로그인 에러 메시지를 확인합니다. 에러가 있으면 메시지 반환, 없으면 None."""
@@ -40,11 +76,12 @@ async def _verify_login_success(page: Page) -> bool:
         raise LoginError(f"예상치 못한 URL로 리다이렉트: {current_url}")
 
     logger.debug("blog.naver.com 도메인 접속 성공: %s", current_url)
-    cookies = await page.context.cookies()
-    naver_cookies = [c for c in cookies if "naver.com" in c["domain"]]
-    if not naver_cookies:
-        raise LoginError("로그인 후 세션 확인에 실패했습니다. (쿠키 없음)")
-    logger.debug("네이버 쿠키 %d개 확인", len(naver_cookies))
+    if not await _has_login_cookies(page):
+        raise LoginError(
+            "로그인 후 세션 확인에 실패했습니다. "
+            "(로그인 쿠키 NID_AUT/NID_SES 없음)"
+        )
+    logger.debug("로그인 쿠키(NID_AUT/NID_SES) 확인 완료")
     return True
 
 
@@ -72,18 +109,20 @@ async def login_to_naver(
         )
         await page.wait_for_selector(LOGIN_ID_INPUT, state="visible", timeout=10000)
 
-        # 2. 아이디 입력
-        await page.click(LOGIN_ID_INPUT)
-        await page.fill(LOGIN_ID_INPUT, user_id)
-        await page.dispatch_event(LOGIN_ID_INPUT, "input")
-        await page.dispatch_event(LOGIN_ID_INPUT, "change")
+        # 2. 아이디 입력 (사람 유사 입력 — 네이버 '자동입력 방지' 회피)
+        #    fill()은 값을 직접 주입해 키 이벤트가 없으므로 봇으로 감지될 수 있다.
+        #    press_sequentially()로 실제 키 입력 이벤트를 발생시킨다.
+        id_locator = page.locator(LOGIN_ID_INPUT)
+        await id_locator.click()
+        await id_locator.fill("")
+        await id_locator.press_sequentially(user_id, delay=80)
 
-        # 3. 비밀번호 입력
+        # 3. 비밀번호 입력 (사람 유사 입력)
         await page.wait_for_selector(LOGIN_PW_INPUT, state="visible", timeout=5000)
-        await page.click(LOGIN_PW_INPUT)
-        await page.fill(LOGIN_PW_INPUT, password)
-        await page.dispatch_event(LOGIN_PW_INPUT, "input")
-        await page.dispatch_event(LOGIN_PW_INPUT, "change")
+        pw_locator = page.locator(LOGIN_PW_INPUT)
+        await pw_locator.click()
+        await pw_locator.fill("")
+        await pw_locator.press_sequentially(password, delay=80)
 
         # 4. 로그인 버튼 클릭 (대체 셀렉터 지원)
         login_clicked = False
@@ -99,17 +138,19 @@ async def login_to_naver(
         if not login_clicked:
             raise LoginError("로그인 버튼을 찾을 수 없습니다.")
 
-        # 5. 로그인 완료 대기
-        for state in ("networkidle", "load"):
-            try:
-                await page.wait_for_load_state(state, timeout=10000)
+        # 5. 로그인 완료 대기: 성공 시 발급되는 쿠키(NID_AUT/NID_SES)가 생길
+        #    때까지 폴링한다. 로그인 성공 후 www.naver.com 등으로의 리다이렉트가
+        #    여러 단계(중간 nid.naver.com 페이지, 기기 등록 등)를 거치므로, 단순
+        #    load 대기 후 URL 판정만으로는 중간 페이지를 실패로 오판할 수 있다.
+        login_ok = False
+        for _ in range(15):
+            if await _has_login_cookies(page):
+                login_ok = True
                 break
-            except PlaywrightTimeout:
-                continue
+            await asyncio.sleep(1)
 
-        current_url = page.url
-        if "nid.naver.com" in current_url:
-            # CAPTCHA 확인
+        if not login_ok:
+            # 로그인 쿠키가 없으면 추가 인증(CAPTCHA/기기 인증) 또는 자격증명 오류.
             captcha_count = await page.locator("iframe[src*='captcha']").count()
             captcha_visible = (
                 await page.locator("#rcapt").is_visible()
@@ -118,16 +159,26 @@ async def login_to_naver(
             if captcha_count > 0 or captcha_visible:
                 if not headless:
                     await _wait_for_captcha_manual(page)
+                    # 수동 처리 후 쿠키가 생겼는지 재확인
+                    for _ in range(30):
+                        if await _has_login_cookies(page):
+                            login_ok = True
+                            break
+                        await asyncio.sleep(1)
                 else:
                     raise CaptchaDetectedError(
                         "CAPTCHA가 감지되었습니다. "
                         "HEADLESS=false로 설정하고 수동으로 풀어주세요."
                     )
 
+        if not login_ok:
             error_msg = await _check_login_error(page)
             if error_msg:
                 raise InvalidCredentialsError(f"로그인 실패: {error_msg}")
             raise LoginError("로그인에 실패했습니다.")
+
+        # 5-1. 로그인 직후 나타날 수 있는 '새로운 기기 등록' 페이지를 넘긴다.
+        await _dismiss_device_registration(page)
 
         # 6. 세션 저장
         Path(storage_state_path).parent.mkdir(parents=True, exist_ok=True)
@@ -195,20 +246,14 @@ async def verify_login_session(page: Page) -> bool:
         await page.goto("https://blog.naver.com", wait_until="load", timeout=10000)
         await asyncio.sleep(1)  # 추가 로딩 대기
 
-        # URL 및 쿠키 확인
-        current_url = page.url
-
-        # 로그인 페이지로 리다이렉트되지 않았는지 확인
-        if "nid.naver.com" in current_url:
+        # 로그인 페이지로 리다이렉트되었으면 세션 만료
+        if "nid.naver.com" in page.url:
             return False
 
-        # blog.naver.com 도메인에 있고 쿠키가 있으면 로그인된 것으로 간주
-        if "blog.naver.com" in current_url:
-            cookies = await page.context.cookies()
-            naver_cookies = [c for c in cookies if "naver.com" in c["domain"]]
-            return len(naver_cookies) > 0
-
-        return False
+        # 로그인 전용 쿠키(NID_AUT/NID_SES)로 판정한다.
+        # NNB 등 비로그인 쿠키의 존재로 판정하면 로그아웃 상태를 '유효'로
+        # 오탐하므로, 반드시 로그인 쿠키 존재 여부를 확인한다. (DEF-001)
+        return await _has_login_cookies(page)
     except Exception as e:
         await handle_playwright_error(
             e, page, "verify_login_session", save_screenshot=False

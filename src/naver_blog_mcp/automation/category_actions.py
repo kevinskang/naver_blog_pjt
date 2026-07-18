@@ -30,10 +30,13 @@ async def _extract_blog_id(page: Page) -> Optional[str]:
         if path_match:
             candidate = path_match.group(1)
             exclude_prefixes = {"PostList.naver", "postwrite", "PostView.naver"}
+            # 블로그 ID에는 '.'이 없다. BlogHome.naver, GoBlogWrite.naver 등
+            # 엔드포인트 경로를 blog_id로 오추출하지 않도록 제외한다.
             if (
                 candidate
                 and candidate not in exclude_prefixes
                 and not candidate.startswith("Post")
+                and "." not in candidate
             ):
                 return candidate
 

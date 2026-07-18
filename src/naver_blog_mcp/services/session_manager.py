@@ -13,7 +13,10 @@ from ..utils.exceptions import LoginError
 
 logger = logging.getLogger(__name__)
 
-STEALTH_SCRIPT = r"""
+# userAgentData의 브랜드/플랫폼/버전은 config.USER_AGENT 및 실제 번들 Chromium과
+# 일치해야 봇 탐지를 피할 수 있다. 버전·플랫폼은 config에서 주입하며, JS 객체
+# 리터럴의 중괄호와 충돌하지 않도록 placeholder 치환 방식을 쓴다.
+_STEALTH_TEMPLATE = r"""
 Object.defineProperty(navigator, 'webdriver', {
     get: () => false,
 });
@@ -26,20 +29,23 @@ Object.defineProperty(navigator, 'languages', {
 Object.defineProperty(navigator, 'userAgentData', {
     get: () => ({
         brands: [
-            { brand: 'Chromium', version: '148' },
-            { brand: 'Google Chrome', version: '148' },
+            { brand: 'Chromium', version: '__MAJOR__' },
+            { brand: 'Google Chrome', version: '__MAJOR__' },
+            { brand: 'Not?A_Brand', version: '24' },
         ],
         mobile: false,
-        platform: 'Linux',
+        platform: '__PLATFORM__',
         getHighEntropyValues: async () => ({
             architecture: 'x86',
+            bitness: '64',
             model: '',
-            platform: 'Linux',
+            platform: '__PLATFORM__',
             platformVersion: '10.0.0',
-            uaFullVersion: '148.0.0.0',
+            uaFullVersion: '__FULL__',
             fullVersionList: [
-                { brand: 'Chromium', version: '148.0.0.0' },
-                { brand: 'Google Chrome', version: '148.0.0.0' },
+                { brand: 'Chromium', version: '__FULL__' },
+                { brand: 'Google Chrome', version: '__FULL__' },
+                { brand: 'Not?A_Brand', version: '24.0.0.0' },
             ],
         }),
     }),
@@ -48,6 +54,12 @@ window.chrome = {
     runtime: {},
 };
 """
+
+STEALTH_SCRIPT = (
+    _STEALTH_TEMPLATE.replace("__MAJOR__", config.CHROME_MAJOR_VERSION)
+    .replace("__FULL__", config.CHROME_FULL_VERSION)
+    .replace("__PLATFORM__", "Windows")
+)
 
 
 class SessionManager:

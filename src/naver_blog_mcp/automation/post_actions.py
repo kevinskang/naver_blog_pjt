@@ -315,7 +315,10 @@ async def fill_post_title(page: Page, title: str) -> None:
 async def fill_post_content(page: Page, content: str, use_html: bool = False) -> None:
     """
     블로그 글 본문을 입력합니다.
-    스마트에디터 ONE은 iframe 없이 직접 contenteditable을 사용합니다.
+
+    스마트에디터 ONE의 본문은 ``iframe#mainFrame`` 내부의
+    ``.se-component.se-text`` 텍스트 컴포넌트 문단(contenteditable)에 있습니다.
+    (제목은 별도의 ``.se-documentTitle`` 컴포넌트이므로 본문 문단과 구분된다.)
 
     Args:
         page: Playwright Page 객체
@@ -326,28 +329,54 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
         NaverBlogPostError: 본문 입력 실패 시
     """
     try:
-        # 팝업이 있으면 먼저 닫기
         await _close_page_popups(page)
 
         content_filled = False
 
-        # 방법 1: iframe이 있는 경우 (구형 스마트에디터)
+        # 방법 1: iframe#mainFrame 내부의 본문 문단을 클릭 후 타이핑 (스마트에디터 ONE)
+        main_frame = None
         try:
-            iframe = None
-            try:
-                iframe = await get_editor_frame(page)
-            except Exception:
-                iframe = None
-
-            if iframe:
-                content_filled = await _type_content_in_iframe(iframe, content)
-                if content_filled:
-                    await page.evaluate("() => { window.focus(); }")
-                    await asyncio.sleep(0.5)
+            iframe_element = await page.wait_for_selector(
+                "iframe#mainFrame", timeout=10000
+            )
+            if iframe_element is not None:
+                main_frame = await iframe_element.content_frame()
         except Exception:
-            pass
+            main_frame = None
 
-        # 방법 2: iframe 없이 직접 contenteditable (스마트에디터 ONE)
+        if main_frame is not None:
+            # 로드 시 뜨는 '작성 중인 글' 등 팝업을 닫아 에디터를 활성화한다.
+            for popup_sel in (
+                "button.se-popup-button-cancel",
+                "button.se-popup-button-confirm",
+            ):
+                try:
+                    popup = main_frame.locator(popup_sel).first
+                    if await popup.count() > 0 and await popup.is_visible():
+                        await popup.click(timeout=2000)
+                        await asyncio.sleep(0.5)
+                except Exception:  # noqa: S112
+                    continue
+
+            # 본문 텍스트 컴포넌트만 대상으로 한다 (제목 문단 오입력 방지).
+            body_selectors = (
+                ".se-component.se-text .se-text-paragraph",
+                ".se-component.se-text",
+            )
+            for sel in body_selectors:
+                try:
+                    body = main_frame.locator(sel).first
+                    if await body.count() > 0:
+                        await body.click()
+                        await asyncio.sleep(0.3)
+                        await page.keyboard.type(content, delay=10)
+                        logger.info("본문 입력 완료 (mainFrame, selector: %s)", sel)
+                        content_filled = True
+                        break
+                except Exception:  # noqa: S112
+                    continue
+
+        # 방법 2: iframe 없이 직접 contenteditable (구형/폴백)
         if not content_filled:
             content_filled = await _type_content_direct(page, content)
 
@@ -356,6 +385,8 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
 
         await asyncio.sleep(1)
 
+    except NaverBlogPostError:
+        raise
     except PlaywrightTimeout as e:
         raise NaverBlogPostError(f"본문 입력 시간 초과: {str(e)}") from e
     except Exception as e:
@@ -611,6 +642,49 @@ async def publish_post(  # noqa: C901
         raise NaverBlogPostError(f"발행 중 오류: {str(custom_error)}") from e
 
 
+async def save_post_as_draft(page: Page) -> Dict[str, Any]:
+    """작성 중인 글을 임시저장합니다 (공개 발행하지 않음).
+
+    스마트에디터 ONE 상단 툴바의 '저장'(임시저장) 버튼을 클릭한다.
+    버튼 class(save_btn__XXXXX)의 해시 접미사는 배포마다 바뀌므로
+    class 접두 매칭과 정확 텍스트 매칭을 함께 사용한다.
+    """
+    save_selectors = [
+        "button[class*='save_btn']",
+        "button:text-is('저장')",
+    ]
+
+    main_frame = None
+    try:
+        iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=10000)
+        if iframe_element is not None:
+            main_frame = await iframe_element.content_frame()
+    except Exception:
+        main_frame = None
+
+    scopes = ([main_frame] if main_frame is not None else []) + [page]
+    for scope in scopes:
+        for sel in save_selectors:
+            try:
+                btn = scope.locator(sel).first
+                if await btn.count() > 0:
+                    # 최초 진입 시 뜨는 '도움말' 캐러셀 오버레이가 저장 버튼 위를
+                    # 덮어 일반 클릭이 가로채질 수 있다. 요소의 native click을 직접
+                    # 호출하여 오버레이와 무관하게 저장 핸들러를 실행한다.
+                    await btn.evaluate("el => el.click()")
+                    await asyncio.sleep(1.5)
+                    logger.info("임시저장 완료 (selector: %s)", sel)
+                    return {
+                        "success": True,
+                        "message": "임시저장되었습니다.",
+                        "post_url": None,
+                    }
+            except Exception:  # noqa: S112
+                continue
+
+    raise NaverBlogPostError("임시저장 버튼을 찾을 수 없습니다.")
+
+
 async def create_blog_post(
     page: Page,
     title: str,
@@ -621,9 +695,10 @@ async def create_blog_post(
     category: Optional[str] = None,
     tags: Optional[list] = None,
     schedule_time: Optional[str] = None,
+    publish: bool = True,
 ) -> Dict[str, Any]:
     """
-    네이버 블로그에 새 글을 작성하고 발행하는 전체 프로세스.
+    네이버 블로그에 새 글을 작성하고 발행(또는 임시저장)하는 전체 프로세스.
 
     Args:
         page: Playwright Page 객체 (로그인된 상태여야 함)
@@ -635,21 +710,25 @@ async def create_blog_post(
         category: 카테고리 이름 (옵션)
         tags: 태그 목록 (옵션)
         schedule_time: 예약 발행 시간 (옵션, 형식: YYYY-MM-DD HH:MM)
+        publish: True면 발행, False면 임시저장 (기본: True)
 
     Returns:
-        발행 결과 딕셔너리
+        발행/임시저장 결과 딕셔너리
     """
     try:
         await navigate_to_post_write_page(page, blog_id)
         await fill_post_title(page, title)
         await fill_post_content(page, content, use_html)
-        result = await publish_post(
-            page,
-            wait_for_completion,
-            category=category,
-            tags=tags,
-            schedule_time=schedule_time,
-        )
+        if not publish:
+            result = await save_post_as_draft(page)
+        else:
+            result = await publish_post(
+                page,
+                wait_for_completion,
+                category=category,
+                tags=tags,
+                schedule_time=schedule_time,
+            )
         result["title"] = title
         return result
 

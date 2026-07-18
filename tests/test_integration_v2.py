@@ -643,7 +643,11 @@ class TestLiveIntegration:
 
     @pytest.mark.asyncio
     async def test_full_post_creation(self, live_page):
-        """제목·본문 입력 후 발행까지 전체 흐름 검증."""
+        """제목·본문 입력 후 임시저장까지 전체 흐름 검증.
+
+        공개 발행(publish=True)은 실제 블로그에 글을 노출시키므로, 라이브
+        테스트는 publish=False(임시저장)로만 검증하여 부작용을 남기지 않는다.
+        """
         import time
 
         from naver_blog_mcp.automation.post_actions import create_blog_post
@@ -653,7 +657,6 @@ class TestLiveIntegration:
             page=live_page,
             title=f"[통합테스트] 자동화 검증 {ts}",
             content="이 글은 통합 테스트에서 자동으로 작성된 글입니다.\n\n테스트 통과 여부 확인용.",
+            publish=False,
         )
         assert result["success"] is True, f"글 작성 실패: {result.get('message')}"
-        assert result.get("post_url"), "발행 URL이 없습니다"
-        print(f"\n  발행 URL: {result['post_url']}")

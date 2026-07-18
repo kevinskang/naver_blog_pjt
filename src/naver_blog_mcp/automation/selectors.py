@@ -13,10 +13,19 @@ class NaverSelectors:
     """네이버 블로그 셀렉터 클래스."""
 
     # 로그인 페이지
+    # 2026-07 기준 네이버 로그인 버튼은 반응형 레이아웃에 따라 두 개(column/row)가
+    # 존재하며 하나만 표시된다. class는 btn_done(패스키 버튼과 공유)이므로 id로
+    # 지정한다. 구 UI(.btn_login) 및 정확 텍스트 매칭을 폴백으로 둔다.
+    # 주의: button[type='submit']은 현재 언어 전환 버튼에 매칭되므로 사용 금지.
     LOGIN = {
         "id_input": "#id",
         "pw_input": "#pw",
-        "login_btn": [".btn_login", "button[type='submit']"],
+        "login_btn": [
+            "#loginBtn_column",
+            "#loginBtn_row",
+            "button:text-is('로그인')",
+            ".btn_login",
+        ],
         "error_message": ".error_message",
     }
 

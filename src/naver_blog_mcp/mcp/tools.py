@@ -314,6 +314,7 @@ async def handle_create_post(
             category=category,
             tags=tags,
             schedule_time=schedule_time,
+            publish=publish,
         )
 
         result["images_uploaded"] = images_uploaded
