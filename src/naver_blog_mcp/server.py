@@ -52,6 +52,9 @@ class NaverBlogMCPServer:
         self._extra_contexts = {}
         self._extra_session_managers = {}
 
+        # 카테고리 캐시 (Key: account_id, Value: List[Dict[str, str]])
+        self._categories = {}
+
         # 설정 검증
         config.validate()
 
@@ -160,12 +163,48 @@ class NaverBlogMCPServer:
 
     async def _execute_tool(self, name: str, arguments: dict, page: Page) -> dict:
         """Tool 이름에 따라 적절한 핸들러를 호출합니다."""
+        account_id = arguments.get("account_id")
         if name == "naver_blog_create_post":
+            # 1. 카테고리 캐시 검사 및 로딩
+            key = account_id or ""
+            if key not in self._categories or not self._categories[key]:
+                await self.load_categories(account_id, force_reload=False)
+                
+            categories = self._categories.get(key, [])
+            category_param = arguments.get("category")
+            
+            if not category_param:
+                # 카테고리가 지정되지 않은 경우: 제일 상단 카테고리 자동 설정
+                if categories:
+                    category_param = categories[0]["name"]
+                    logger.info(f"카테고리가 명시되지 않아 가장 상단 카테고리 '{category_param}'로 설정합니다.")
+                else:
+                    logger.warning("블로그에 카테고리가 존재하지 않습니다.")
+            else:
+                # 1단계 검증: 로컬 캐시 확인
+                category_names = [c["name"] for c in categories]
+                if category_param not in category_names:
+                    logger.info(f"지정한 카테고리 '{category_param}'가 로컬 캐시에 없어 네이버 실시간 조회를 통해 강제 동기화합니다.")
+                    
+                    # 2단계 검증: 네이버 블로그 직접 강제 조회
+                    categories = await self.load_categories(account_id, force_reload=True)
+                    category_names = [c["name"] for c in categories]
+                    
+                    # 3단계: 양쪽 모두 부재 시 에러 처리
+                    if category_param not in category_names:
+                        raise ValueError(
+                            f"지정하신 카테고리 '{category_param}'가 존재하지 않습니다. "
+                            f"현재 네이버 블로그에 등록된 카테고리 목록: {', '.join(category_names) or '(없음)'}. "
+                            f"네이버 블로그 설정에서 먼저 카테고리를 생성해주세요."
+                        )
+                    else:
+                        logger.info("실시간 조회 결과 카테고리가 확인되었습니다. 로컬 캐시가 성공적으로 업데이트되었습니다.")
+
             return await handle_create_post(
                 page=page,
                 title=arguments["title"],
                 content=arguments["content"],
-                category=arguments.get("category"),
+                category=category_param,
                 tags=arguments.get("tags"),
                 images=arguments.get("images"),
                 publish=arguments.get("publish", True),
@@ -177,12 +216,37 @@ class NaverBlogMCPServer:
         elif name == "naver_blog_check_session":
             return await handle_check_session(page=page)
         elif name == "naver_blog_edit_post":
+            # 카테고리 변경 시에만 검증 수행
+            category_param = arguments.get("category")
+            if category_param:
+                key = account_id or ""
+                if key not in self._categories or not self._categories[key]:
+                    await self.load_categories(account_id, force_reload=False)
+                
+                categories = self._categories.get(key, [])
+                category_names = [c["name"] for c in categories]
+                if category_param not in category_names:
+                    logger.info(f"변경할 카테고리 '{category_param}'가 로컬 캐시에 없어 네이버 실시간 조회를 통해 강제 동기화합니다.")
+                    
+                    # 2단계 검증
+                    categories = await self.load_categories(account_id, force_reload=True)
+                    category_names = [c["name"] for c in categories]
+                    
+                    if category_param not in category_names:
+                        raise ValueError(
+                            f"변경할 카테고리 '{category_param}'가 존재하지 않습니다. "
+                            f"현재 네이버 블로그에 등록된 카테고리 목록: {', '.join(category_names) or '(없음)'}. "
+                            f"네이버 블로그 설정에서 먼저 카테고리를 생성해주세요."
+                        )
+                    else:
+                        logger.info("실시간 조회 결과 카테고리가 확인되었습니다. 로컬 캐시가 성공적으로 업데이트되었습니다.")
+
             return await handle_edit_post(
                 page=page,
                 post_url=arguments["post_url"],
                 title=arguments["title"],
                 content=arguments["content"],
-                category=arguments.get("category"),
+                category=category_param,
                 tags=arguments.get("tags"),
             )
         elif name == "naver_blog_list_posts":
@@ -210,7 +274,13 @@ class NaverBlogMCPServer:
         elif name == "naver_blog_get_stats":
             return await handle_get_stats(page=page)
         elif name == "naver_blog_list_categories":
-            return await handle_list_categories(page=page)
+            # 항상 force_reload=True로 호출하여 최신 카테고리를 긁어오고 캐시를 동기화합니다.
+            categories_data = await self.load_categories(account_id, force_reload=True)
+            return {
+                "success": True,
+                "message": f"{len(categories_data)}개의 카테고리를 조회하고 캐시를 갱신했습니다.",
+                "categories": categories_data
+            }
 
         raise ValueError(f"알 수 없는 Tool: {name}")
 
@@ -254,6 +324,60 @@ class NaverBlogMCPServer:
                 self.browser, self.context, headless=config.HEADLESS
             )
 
+    def _get_category_cache_path(self, account_id: Optional[str] = None) -> str:
+        """계정별 카테고리 캐시 파일 경로를 반환합니다."""
+        key = account_id or "default"
+        return f"playwright-state/categories_{key}.json"
+
+    async def load_categories(self, account_id: Optional[str] = None, force_reload: bool = False) -> list[dict]:
+        """지정된 계정의 블로그 카테고리를 가져와서 캐싱합니다.
+
+        로컬 캐시 파일이 존재하면 이를 우선 읽어오고, 없을 때만 네이버에 직접 접속합니다.
+        """
+        key = account_id or ""
+        cache_path = self._get_category_cache_path(account_id)
+
+        # 1. force_reload가 아니고 로컬 캐시 파일이 존재하는 경우 파일에서 로드
+        if not force_reload:
+            import os
+            if os.path.exists(cache_path):
+                try:
+                    with open(cache_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        self._categories[key] = data
+                        logger.info(f"Loaded categories from local file cache: {cache_path}")
+                        return data
+                except Exception as e:
+                    logger.warning(f"Failed to read category cache file ({cache_path}): {e}")
+
+        # 2. 캐시 파일이 없거나 강제 갱신이 필요할 경우 네이버 접속 로딩
+        logger.info(f"Loading categories from Naver blog for account: {key or 'default'}")
+        try:
+            page = await self.get_page(account_id)
+            from .automation.category_actions import get_categories
+
+            result = await get_categories(page)
+            if result.get("success") and result.get("categories"):
+                categories_data = result["categories"]
+                self._categories[key] = categories_data
+
+                # 로컬 파일 캐시에 동기화
+                import os
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                with open(cache_path, "w", encoding="utf-8") as f:
+                    json.dump(categories_data, f, ensure_ascii=False, indent=2)
+
+                logger.info(f"Successfully cached and saved {len(categories_data)} categories to {cache_path}.")
+                return categories_data
+            else:
+                logger.warning(f"Failed to load categories from Naver: {result.get('message')}")
+                self._categories[key] = []
+                return []
+        except Exception as e:
+            logger.error(f"Error loading categories: {e}")
+            self._categories[key] = []
+            return []
+
     async def initialize(self):
         """브라우저를 실행합니다. 로그인은 첫 Tool 호출 시점에 수행됩니다."""
         logger.info("Initializing Naver Blog MCP Server...")
@@ -290,6 +414,8 @@ class NaverBlogMCPServer:
             )
             self._set_context(account_id, context)
             logger.info(f"Browser context initialized ({account_id})")
+            # 백그라운드에서 카테고리 로딩 시도 (기존 캐시 파일 우선 로드)
+            asyncio.create_task(self.load_categories(account_id, force_reload=False))
             return True
         except Exception as e:
             logger.warning(
@@ -313,6 +439,8 @@ class NaverBlogMCPServer:
                 self.browser, headless=config.HEADLESS
             )
             logger.info("Browser context initialized")
+            # 백그라운드에서 카테고리 로딩 시도 (기존 캐시 파일 우선 로드)
+            asyncio.create_task(self.load_categories(None, force_reload=False))
             return True
         except Exception as e:
             logger.warning(
