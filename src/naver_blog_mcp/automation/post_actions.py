@@ -11,7 +11,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import PostError
 from ..utils.iframe_helper import get_editor_frame
-from ..utils.selector_helper import find_element_with_alternatives
+from ..utils.selector_helper import dismiss_overlays, find_element_with_alternatives
 from .selectors import (
     POST_WRITE_CONTENT_BODY,
     POST_WRITE_PUBLISH_BTN,
@@ -123,6 +123,7 @@ async def _fill_tags(page: Page, tags: list) -> bool:
     for frame in page.frames:
         try:
             tag_selectors = [
+                "input#tag-input",
                 "input.tag_input__rvUB5",  # 라이브 검증 (스마트에디터 ONE)
                 "input[placeholder*='태그']",
                 ".tag_input input",
@@ -130,16 +131,20 @@ async def _fill_tags(page: Page, tags: list) -> bool:
                 "input[id*='tag']",
             ]
             for sel in tag_selectors:
-                if await frame.locator(sel).count() > 0:
-                    tag_input = frame.locator(sel).first
+                locator = frame.locator(sel).first
+                try:
+                    # 태그 입력 필드가 나타날 때까지 프레임당 최대 1초 대기
+                    await locator.wait_for(state="visible", timeout=1000)
                     for tag in tags:
-                        await tag_input.click()
-                        await tag_input.type(tag, delay=30)
-                        await frame.keyboard.press("Enter")
+                        await locator.click()
+                        await locator.type(tag, delay=50)
+                        await page.keyboard.press("Enter")
                         await asyncio.sleep(0.3)
                     logger.info(f"태그 입력 완료: {tags}")
                     return True
-        except Exception:
+                except Exception:  # noqa: S110
+                    continue
+        except Exception:  # noqa: S110
             continue
 
     logger.warning("태그 입력 필드를 찾을 수 없습니다")
@@ -148,21 +153,7 @@ async def _fill_tags(page: Page, tags: list) -> bool:
 
 async def _close_page_popups(page: Page) -> None:
     """Close common popups on the page to ensure editor is accessible."""
-    popup_close_selectors = [
-        "button.se-popup-button-cancel",
-        "button:has-text('닫기')",
-        "button:has-text('확인')",
-        "button.se-popup-close",
-        ".se-popup-dim",
-    ]
-
-    for sel in popup_close_selectors:
-        try:
-            locator = page.locator(sel)
-            if await locator.count() > 0:
-                await locator.first.click(timeout=2000)
-        except Exception:
-            continue
+    await dismiss_overlays(page)
 
 
 async def _type_content_in_iframe(iframe, content: str) -> bool:
@@ -589,6 +580,67 @@ async def fill_post_content(  # noqa: C901
         raise NaverBlogPostError(f"본문 입력 중 오류: {str(e)}") from e
 
 
+async def _click_final_publish_button(page: Page) -> bool:
+    """최종 발행 팝업 대화상자에서 최종 발행(확인) 단추를 클릭합니다."""
+    final_publish_clicked = False
+    for frame in page.frames:
+        try:
+            dialog_publish_selectors = [
+                "button.confirm_btn__WEaBq",  # 라이브 검증 (최종 발행)
+                ".layer_popup__i0QOY button[class*='confirm']:has-text('발행')",
+                ".layer_popup__i0QOY button:has-text('발행')",
+            ]
+
+            for selector in dialog_publish_selectors:
+                try:
+                    btn_count = await frame.locator(selector).count()
+                    if btn_count > 0:
+                        await frame.locator(selector).first.click(
+                            force=True, timeout=5000
+                        )
+                        final_publish_clicked = True
+                        await asyncio.sleep(2)
+                        break
+                except Exception:  # noqa: S110
+                    continue
+
+            if final_publish_clicked:
+                break
+        except Exception:  # noqa: S110
+            continue
+
+    if not final_publish_clicked:
+        for frame in page.frames:
+            try:
+                result = await frame.evaluate("""
+                    () => {
+                        const popup = document.querySelector(
+                            '.layer_popup__i0QOY.is_show__TMSLq'
+                        );
+                        if (!popup) return 'No popup';
+
+                        const buttons = popup.querySelectorAll('button');
+                        for (let btn of buttons) {
+                            if (
+                                (btn.textContent || '').trim() === '발행'
+                            ) {
+                                btn.click();
+                                return 'Clicked';
+                            }
+                        }
+                        return 'No button';
+                    }
+                """)
+                if "Clicked" in result:
+                    await asyncio.sleep(3)
+                    final_publish_clicked = True
+                    break
+            except Exception:  # noqa: S110
+                continue
+
+    return final_publish_clicked
+
+
 async def publish_post(  # noqa: C901
     page: Page,
     wait_for_completion: bool = True,
@@ -632,25 +684,7 @@ async def publish_post(  # noqa: C901
         logger.debug("페이지 타이틀: %s", await page.title())
 
         # 페이지 내 모든 팝업/모달 닫기
-        try:
-            popup_close_selectors = [
-                "button.se-popup-button-cancel",
-                "button:has-text('닫기')",
-                "button:has-text('확인')",
-                "button.se-popup-close",
-                ".se-popup-dim",
-            ]
-            for close_sel in popup_close_selectors:
-                popup_count = await page.locator(close_sel).count()
-                if popup_count > 0:
-                    try:
-                        await page.locator(close_sel).first.click(timeout=2000)
-                        logger.debug("페이지 팝업 닫기: %s", close_sel)
-                        await asyncio.sleep(0.5)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        await dismiss_overlays(page)
 
         # 1. 발행 버튼 찾기 및 클릭
         async def _find_and_click_publish(page_or_frame) -> bool:
@@ -663,7 +697,7 @@ async def publish_post(  # noqa: C901
                             await page_or_frame.locator(sel).first.click(timeout=5000)
                             await asyncio.sleep(1)
                             return True
-                    except Exception:
+                    except Exception:  # noqa: S110
                         continue
 
                 if isinstance(POST_WRITE_PUBLISH_BTN, list):
@@ -677,33 +711,23 @@ async def publish_post(  # noqa: C901
                             await page_or_frame.locator(cs).first.click(timeout=5000)
                             await asyncio.sleep(1)
                             return True
-                    except Exception:
+                    except Exception:  # noqa: S110
                         continue
-            except Exception:
+            except Exception:  # noqa: S110
                 return False
             return False
 
         publish_clicked = False
         for frame in page.frames:
             try:
-                for help_sel in [
-                    ".se-help-panel-close-button",  # 라이브 검증
-                    "button.se-help-close-btn",
-                    "button:has-text('닫기')",
-                    ".se-help-close",
-                ]:
-                    try:
-                        if await frame.locator(help_sel).count() > 0:
-                            await frame.locator(help_sel).first.click(timeout=2000)
-                            await asyncio.sleep(0.3)
-                    except Exception:
-                        continue
+                # 각 프레임 진입 시 불필요한 도움말/오버레이 닫기 수행
+                await dismiss_overlays(frame)
 
                 if await _find_and_click_publish(frame):
                     publish_clicked = True
                     logger.info("발행 버튼 클릭 성공 (frame)")
                     break
-            except Exception:
+            except Exception:  # noqa: S110
                 continue
 
         if not publish_clicked:
@@ -738,65 +762,10 @@ async def publish_post(  # noqa: C901
                             break
                     await asyncio.sleep(0.5)
 
-                final_publish_clicked = False
-                for frame in page.frames:
-                    try:
-                        dialog_publish_selectors = [
-                            "button.confirm_btn__WEaBq",  # 라이브 검증 (최종 발행)
-                            (
-                                ".layer_popup__i0QOY"
-                                " button[class*='confirm']:has-text('발행')"
-                            ),
-                            ".layer_popup__i0QOY button:has-text('발행')",
-                        ]
+                # 최종 발행 확인 버튼 클릭 수행
+                await _click_final_publish_button(page)
 
-                        for selector in dialog_publish_selectors:
-                            try:
-                                btn_count = await frame.locator(selector).count()
-                                if btn_count > 0:
-                                    await frame.locator(selector).first.click(
-                                        force=True, timeout=5000
-                                    )
-                                    final_publish_clicked = True
-                                    await asyncio.sleep(2)
-                                    break
-                            except Exception:
-                                continue
-
-                        if final_publish_clicked:
-                            break
-                    except Exception:
-                        continue
-
-                if not final_publish_clicked:
-                    for frame in page.frames:
-                        try:
-                            result = await frame.evaluate("""
-                                () => {
-                                    const popup = document.querySelector(
-                                        '.layer_popup__i0QOY.is_show__TMSLq'
-                                    );
-                                    if (!popup) return 'No popup';
-
-                                    const buttons = popup.querySelectorAll('button');
-                                    for (let btn of buttons) {
-                                        if (
-                                            (btn.textContent || '').trim() === '발행'
-                                        ) {
-                                            btn.click();
-                                            return 'Clicked';
-                                        }
-                                    }
-                                    return 'No button';
-                                }
-                            """)
-                            if "Clicked" in result:
-                                await asyncio.sleep(3)
-                                break
-                        except Exception:
-                            continue
-
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
         # 예약 발행 응답 분기

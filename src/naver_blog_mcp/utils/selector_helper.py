@@ -178,3 +178,30 @@ async def wait_for_any_selector(
         f"Could not find any element in {context} with {len(selectors)} selectors",
         details={"context": context, "selectors": selectors},
     )
+
+
+async def dismiss_overlays(page_or_frame: PageOrFrame) -> None:
+    """에디터 화면을 가리는 불필요한 도움말 및 임시저장 복원 팝업을 모두 닫습니다."""
+    popup_close_selectors = [
+        "button.se-popup-button-cancel",  # 임시저장 복원 팝업 취소 버튼
+        "button:has-text('취소')",
+        ".se-help-panel-close-button",    # 도움말 패널 닫기 버튼
+        "button.se-help-close-btn",
+        "button:has-text('닫기')",
+        ".se-help-close",
+        ".se-popup-close-button",
+        "button:has-text('확인')",
+        ".se-popup-dim",
+    ]
+
+    for sel in popup_close_selectors:
+        try:
+            locator = page_or_frame.locator(sel)
+            count = await locator.count()
+            for i in range(count):
+                btn = locator.nth(i)
+                if await btn.is_visible():
+                    await btn.click(timeout=1000)
+                    await asyncio.sleep(0.3)
+        except Exception:  # noqa: S110
+            continue

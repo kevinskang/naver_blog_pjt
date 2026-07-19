@@ -38,7 +38,9 @@ class NaverSelectors:
     # 글쓰기 페이지
     POST_WRITE = {
         "title_input": [
-            "div[contenteditable='true'][data-placeholder='제목']",  # 스마트에디터 ONE
+            ".se-documentTitle p",  # 최신 스마트에디터 ONE 제목 단락
+            ".se-title-text",       # 최신 스마트에디터 ONE 제목 모듈
+            "div[contenteditable='true'][data-placeholder='제목']",
             "div[contenteditable='true']:has-text('제목')",
             "input[placeholder*='제목']",
             "#title",

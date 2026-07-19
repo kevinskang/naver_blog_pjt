@@ -6,6 +6,7 @@
 """
 
 import base64
+import os
 import sys
 import tempfile
 from datetime import datetime, timedelta
@@ -48,8 +49,8 @@ def _session_is_fresh() -> bool:
 
 
 requires_live_session = pytest.mark.skipif(
-    not _session_is_fresh(),
-    reason="playwright-state/auth.json 이 없거나 만료됨 — 라이브 테스트 건너뜀",
+    not _session_is_fresh() or os.environ.get("RUN_LIVE_TESTS") != "true",
+    reason="RUN_LIVE_TESTS 환경변수가 'true'가 아니거나 playwright-state/auth.json 만료 — 라이브 테스트 건너뜀",
 )
 
 
@@ -175,8 +176,8 @@ class TestServerRouting:
     @pytest.mark.asyncio
     async def test_execute_tool_routes_list_categories(self, server):
         mock_page = AsyncMock()
-        expected = {"success": True, "categories": [], "message": "OK"}
-        with patch("naver_blog_mcp.server.handle_list_categories", new=AsyncMock(return_value=expected)):
+        expected_categories = []
+        with patch.object(server, "load_categories", new=AsyncMock(return_value=expected_categories)):
             result = await server._execute_tool(
                 "naver_blog_list_categories", {}, mock_page
             )
@@ -528,24 +529,26 @@ class TestPostActionsHelpers:
     async def test_fill_tags_inputs_each_tag(self):
         """태그 입력 필드가 있으면 각 태그를 입력하고 Enter 누름."""
         page = MagicMock()
+        page.keyboard = AsyncMock()
+        page.keyboard.press = AsyncMock()
         frame = MagicMock()
-
+    
         tag_input = AsyncMock()
         tag_input.click = AsyncMock()
         tag_input.type = AsyncMock()
-
+        tag_input.wait_for = AsyncMock()
+    
         mock_locator = MagicMock()
         mock_locator.count = AsyncMock(return_value=1)
         mock_locator.first = tag_input
+        mock_locator.wait_for = AsyncMock()
         frame.locator = MagicMock(return_value=mock_locator)
-        frame.keyboard = AsyncMock()
-        frame.keyboard.press = AsyncMock()
         page.frames = [frame]
-
+    
         result = await _fill_tags(page, ["태그1", "태그2"])
         assert result is True
         assert tag_input.type.call_count == 2
-        assert frame.keyboard.press.call_count == 2
+        assert page.keyboard.press.call_count == 2
 
 
 # ===========================================================================
