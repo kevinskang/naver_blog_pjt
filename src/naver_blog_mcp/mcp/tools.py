@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import markdown
 from playwright.async_api import Page
 
 from ..automation.category_actions import get_categories
@@ -16,6 +17,7 @@ from ..automation.post_actions import (
     NaverBlogPostError,
     create_blog_post,
     delete_blog_post,
+    delete_draft,
     edit_blog_post,
     list_blog_posts,
     list_draft_posts,
@@ -62,9 +64,18 @@ TOOLS_METADATA = {
                     "type": "string",
                     "description": "글 본문 내용",
                 },
+                "content_format": {
+                    "type": "string",
+                    "enum": ["text", "markdown", "html"],
+                    "description": (
+                        "본문 형식 (기본: text). 'markdown'은 표·굵게·목록 등 "
+                        "서식을 보존해 발행하고, 'html'은 HTML을 그대로 붙여넣습니다."
+                    ),
+                    "default": "text",
+                },
                 "category": {
                     "type": "string",
-                    "description": "카테고리 이름 (선택)",
+                    "description": "카테고리 이름 (선택). 하위 카테고리는 이름만 지정.",
                 },
                 "tags": {
                     "type": "array",
@@ -178,10 +189,35 @@ TOOLS_METADATA = {
             "properties": {
                 "draft_id": {
                     "type": "string",
-                    "description": "발행할 임시저장 글의 식별자(ID)",
+                    "description": "발행할 임시저장 글의 식별자(목록 인덱스)",
                 },
             },
             "required": ["draft_id"],
+        },
+    ),
+    "naver_blog_delete_draft": build_tool_metadata(
+        "naver_blog_delete_draft",
+        (
+            "임시저장된 글을 삭제합니다. draft_id(목록 인덱스) 또는 "
+            "title(제목 완전 일치)로 대상을 지정합니다. title 지정 시 완전 "
+            "일치가 정확히 1건일 때만 삭제되며, 삭제는 되돌릴 수 없습니다."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "draft_id": {
+                    "type": "string",
+                    "description": "삭제할 임시저장 글의 식별자(목록 인덱스)",
+                },
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "삭제할 임시저장 글의 제목(완전 일치). "
+                        "일치 항목이 정확히 1건일 때만 삭제됩니다."
+                    ),
+                },
+            },
+            "required": [],
         },
     ),
     "naver_blog_list_comments": build_tool_metadata(
@@ -258,6 +294,7 @@ async def handle_create_post(
     images: Optional[list[str]] = None,
     publish: bool = True,
     schedule_time: Optional[str] = None,
+    content_format: str = "text",
 ) -> Dict[str, Any]:
     """네이버 블로그에 새 글을 작성합니다.
 
@@ -265,18 +302,32 @@ async def handle_create_post(
         page: Playwright Page 객체 (로그인된 상태)
         title: 글 제목
         content: 글 본문 내용
-        category: 카테고리 이름 (선택)
+        category: 카테고리 이름 (선택). 하위 카테고리는 이름만으로 지정.
         tags: 태그 목록 (선택)
         images: 첨부할 이미지 파일 경로 목록 (선택)
         publish: 즉시 발행 여부 (기본: True, False면 임시저장)
         schedule_time: 예약 발행 시간 (선택)
+        content_format: 본문 형식 — "text"(기본, 평문 타이핑),
+            "markdown"(마크다운→HTML 변환 후 서식 보존 붙여넣기),
+            "html"(HTML 그대로 서식 보존 붙여넣기)
 
     Returns:
         작업 결과 딕셔너리
     """
     images_uploaded = 0
     try:
-        logger.info(f"글 작성 시작: {title}")
+        logger.info(f"글 작성 시작: {title} (format={content_format})")
+
+        # 0. 본문 형식 처리: markdown/html 은 서식 보존 붙여넣기(use_html) 경로 사용
+        body_content = content
+        use_html = False
+        if content_format == "markdown":
+            body_content = markdown.markdown(
+                content, extensions=["tables", "nl2br"]
+            )
+            use_html = True
+        elif content_format == "html":
+            use_html = True
 
         # 1. 이미지 업로드 (본문 작성 전)
         if images:
@@ -307,9 +358,9 @@ async def handle_create_post(
         result = await create_blog_post(
             page=page,
             title=title,
-            content=content,
+            content=body_content,
             blog_id=None,
-            use_html=False,
+            use_html=use_html,
             wait_for_completion=publish and (not schedule_time),
             category=category,
             tags=tags,
@@ -458,6 +509,28 @@ async def handle_publish_draft(page: Page, draft_id: str) -> Dict[str, Any]:
         return {
             "success": False,
             "message": f"임시저장 발행 중 오류가 발생했습니다: {str(custom_error)}",
+        }
+
+
+async def handle_delete_draft(
+    page: Page,
+    draft_id: Optional[str] = None,
+    title: Optional[str] = None,
+) -> Dict[str, Any]:
+    """임시저장된 글을 삭제합니다 (draft_id 인덱스 또는 title 완전 일치).
+
+    삭제는 되돌릴 수 없으므로 재시도 데코레이터를 적용하지 않습니다
+    (부분 실행 후 재시도로 다른 글이 삭제되는 것을 방지).
+    """
+    logger.info(f"임시저장 글 삭제 시작 (draft_id: {draft_id}, title: {title})")
+    try:
+        return await delete_draft(page, draft_id=draft_id, title=title)
+    except Exception as e:
+        custom_error = await handle_playwright_error(e, page, "delete_draft")
+        logger.error("임시저장 삭제 중 예외 발생: %s", custom_error)
+        return {
+            "success": False,
+            "message": f"임시저장 삭제 중 오류가 발생했습니다: {str(custom_error)}",
         }
 
 

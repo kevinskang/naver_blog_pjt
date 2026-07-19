@@ -20,6 +20,7 @@ from .mcp.tools import (
     handle_check_session,
     handle_create_post,
     handle_delete_comment,
+    handle_delete_draft,
     handle_delete_post,
     handle_edit_post,
     handle_get_stats,
@@ -169,6 +170,7 @@ class NaverBlogMCPServer:
                 images=arguments.get("images"),
                 publish=arguments.get("publish", True),
                 schedule_time=arguments.get("schedule_time"),
+                content_format=arguments.get("content_format", "text"),
             )
         elif name == "naver_blog_delete_post":
             return await handle_delete_post(page=page, post_url=arguments["post_url"])
@@ -191,6 +193,12 @@ class NaverBlogMCPServer:
             return await handle_list_drafts(page=page)
         elif name == "naver_blog_publish_draft":
             return await handle_publish_draft(page=page, draft_id=arguments["draft_id"])
+        elif name == "naver_blog_delete_draft":
+            return await handle_delete_draft(
+                page=page,
+                draft_id=arguments.get("draft_id"),
+                title=arguments.get("title"),
+            )
         elif name == "naver_blog_list_comments":
             return await handle_list_comments(
                 page=page, limit=arguments.get("limit", 10)

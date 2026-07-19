@@ -4,7 +4,7 @@
       "WebSearch",
       "WebFetch(domain:chongmoa.com)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\ndocs: Playwright 기반 네이버 블로그 MCP 서버 아키텍처 및 구현 계획\n\n- 네이버 블로그 API 현황 조사 (2020년 공식 API 종료 확인)\n- Playwright 웹 자동화 방식으로 전환 (Selenium 대비 30% 성능 개선)\n- 상세 아키텍처 설계서 작성 (docs/architecture.md)\n  - Selenium vs Playwright 비교 분석\n  - MCP 서버 3-레이어 아키텍처 설계\n  - 네이버 블로그 UI 구조 및 DOM 셀렉터 정의\n  - 세션 관리 및 자동화 감지 우회 방안\n- 4주 구현 계획서 작성 (docs/implementation-plan.md)\n  - Phase 1: Playwright 기본 자동화 + 핵심 기능\n  - Phase 2: 이미지 업로드, Markdown 지원, Stealth 모드\n  - Phase 3: 테스트, 문서화, 배포\n- CLAUDE.md 추가 (한글 응답 설정 및 프로젝트 가이드)\n- .gitignore 확장 (Playwright 관련 파일, 민감 정보 보호)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git commit -m \"$(cat <<''EOF''\ndocs: Playwright \uae30\ubc18 \ub124\uc774\ubc84 \ube14\ub85c\uadf8 MCP \uc11c\ubc84 \uc544\ud0a4\ud14d\ucc98 \ubc0f \uad6c\ud604 \uacc4\ud68d\n\n- \ub124\uc774\ubc84 \ube14\ub85c\uadf8 API \ud604\ud669 \uc870\uc0ac (2020\ub144 \uacf5\uc2dd API \uc885\ub8cc \ud655\uc778)\n- Playwright \uc6f9 \uc790\ub3d9\ud654 \ubc29\uc2dd\uc73c\ub85c \uc804\ud658 (Selenium \ub300\ube44 30% \uc131\ub2a5 \uac1c\uc120)\n- \uc0c1\uc138 \uc544\ud0a4\ud14d\ucc98 \uc124\uacc4\uc11c \uc791\uc131 (docs/architecture.md)\n  - Selenium vs Playwright \ube44\uad50 \ubd84\uc11d\n  - MCP \uc11c\ubc84 3-\ub808\uc774\uc5b4 \uc544\ud0a4\ud14d\ucc98 \uc124\uacc4\n  - \ub124\uc774\ubc84 \ube14\ub85c\uadf8 UI \uad6c\uc870 \ubc0f DOM \uc140\ub809\ud130 \uc815\uc758\n  - \uc138\uc158 \uad00\ub9ac \ubc0f \uc790\ub3d9\ud654 \uac10\uc9c0 \uc6b0\ud68c \ubc29\uc548\n- 4\uc8fc \uad6c\ud604 \uacc4\ud68d\uc11c \uc791\uc131 (docs/implementation-plan.md)\n  - Phase 1: Playwright \uae30\ubcf8 \uc790\ub3d9\ud654 + \ud575\uc2ec \uae30\ub2a5\n  - Phase 2: \uc774\ubbf8\uc9c0 \uc5c5\ub85c\ub4dc, Markdown \uc9c0\uc6d0, Stealth \ubaa8\ub4dc\n  - Phase 3: \ud14c\uc2a4\ud2b8, \ubb38\uc11c\ud654, \ubc30\ud3ec\n- CLAUDE.md \ucd94\uac00 (\ud55c\uae00 \uc751\ub2f5 \uc124\uc815 \ubc0f \ud504\ub85c\uc81d\ud2b8 \uac00\uc774\ub4dc)\n- .gitignore \ud655\uc7a5 (Playwright \uad00\ub828 \ud30c\uc77c, \ubbfc\uac10 \uc815\ubcf4 \ubcf4\ud638)\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(git push:*)",
       "Bash(uv sync:*)",
       "Bash(uv run:*)",
@@ -31,9 +31,16 @@
       "Bash(uv pip *)",
       "Bash(python3 -c ' *)",
       "Bash(ruff --version)",
-      "Bash(ruff check *)"
+      "Bash(ruff check *)",
+      "mcp__obsidian__vault_list",
+      "mcp__obsidian__vault_read",
+      "PowerShell(Write-Output \"=== pyproject scripts/name ===\"; Select-String -Path \"C:\\\\40.Program\\\\naver_blog_pjt\\\\pyproject.toml\" -Pattern \"scripts|naver-blog-mcp|^name\" | ForEach-Object { $_.Line }; Write-Output \"=== .env exists? ===\"; Test-Path \"C:\\\\40.Program\\\\naver_blog_pjt\\\\.env\"; Write-Output \"=== auth session exists? ===\"; Test-Path \"C:\\\\40.Program\\\\naver_blog_pjt\\\\playwright-state\\\\auth.json\")",
+      "PowerShell(uv run *)"
     ],
     "deny": [],
     "ask": []
+  },
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"
   }
 }
