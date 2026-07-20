@@ -9,7 +9,6 @@ from playwright.async_api import Browser, BrowserContext
 
 from ..automation.login import login_to_naver, verify_login_session
 from ..config import config, get_context_config
-from ..utils.exceptions import LoginError
 
 logger = logging.getLogger(__name__)
 
@@ -84,13 +83,7 @@ class SessionManager:
 
     def _get_password(self) -> str:
         """계정별 비밀번호를 환경 변수에서 읽어옵니다 (메모리 저장 방지)."""
-        import os
-
-        if not self.account_id:
-            from ..config import config
-
-            return config.NAVER_BLOG_PASSWORD
-        return os.getenv(f"NAVER_ACCOUNT_{self.account_id.upper()}_PASSWORD", "")
+        return config.get_account_password(self.account_id)
 
     def is_session_file_valid(self) -> bool:
         """
@@ -192,9 +185,10 @@ class SessionManager:
 
             return context
 
-        except LoginError as e:
+        except Exception:
+            # 로그인 실패(LoginError 포함) 시 context 누수를 막기 위해 정리합니다.
             await context.close()
-            raise e
+            raise
         finally:
             await page.close()
 

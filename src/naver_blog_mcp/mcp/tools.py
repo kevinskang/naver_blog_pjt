@@ -26,7 +26,6 @@ from ..automation.post_actions import (
 from ..automation.stats_actions import get_blog_stats
 from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import NaverBlogError, UploadError
-from ..utils.retry import retry_on_error
 
 logger = logging.getLogger(__name__)
 
@@ -270,21 +269,11 @@ TOOLS_METADATA = {
 }
 
 
-def get_tools_list() -> list[dict]:
-    """등록된 Tool 목록을 반환합니다.
-
-    Returns:
-        Tool 메타데이터 리스트
-    """
-    return list(TOOLS_METADATA.values())
-
-
 # ============================================================================
 # Tool Handler Functions
 # ============================================================================
 
 
-@retry_on_error
 async def handle_create_post(
     page: Page,
     title: str,
@@ -401,7 +390,6 @@ async def handle_create_post(
         }
 
 
-@retry_on_error
 async def handle_delete_post(page: Page, post_url: str) -> Dict[str, Any]:
     """네이버 블로그의 글을 삭제합니다."""
     logger.info(f"글 삭제 시작: {post_url}")
@@ -436,7 +424,6 @@ async def handle_check_session(page: Page) -> Dict[str, Any]:
         return {"success": False, "is_logged_in": False, "message": str(e)}
 
 
-@retry_on_error
 async def handle_edit_post(
     page: Page,
     post_url: str,
@@ -465,7 +452,6 @@ async def handle_edit_post(
         }
 
 
-@retry_on_error
 async def handle_list_posts(page: Page, limit: int = 10) -> Dict[str, Any]:
     """글 목록을 조회합니다."""
     logger.info(f"글 목록 조회 시작 (limit: {limit})")
@@ -481,7 +467,6 @@ async def handle_list_posts(page: Page, limit: int = 10) -> Dict[str, Any]:
         }
 
 
-@retry_on_error
 async def handle_list_drafts(page: Page) -> Dict[str, Any]:
     """임시저장 글 목록을 조회합니다."""
     logger.info("임시저장 글 목록 조회 시작")
@@ -497,7 +482,6 @@ async def handle_list_drafts(page: Page) -> Dict[str, Any]:
         }
 
 
-@retry_on_error
 async def handle_publish_draft(page: Page, draft_id: str) -> Dict[str, Any]:
     """임시저장된 글을 발행합니다."""
     logger.info(f"임시저장 글 발행 시작 (draft_id: {draft_id})")
@@ -534,7 +518,6 @@ async def handle_delete_draft(
         }
 
 
-@retry_on_error
 async def handle_list_comments(page: Page, limit: int = 10) -> Dict[str, Any]:
     """댓글 목록을 조회합니다."""
     logger.info(f"댓글 목록 조회 시작 (limit: {limit})")
@@ -550,7 +533,6 @@ async def handle_list_comments(page: Page, limit: int = 10) -> Dict[str, Any]:
         }
 
 
-@retry_on_error
 async def handle_delete_comment(page: Page, comment_id: str) -> Dict[str, Any]:
     """댓글을 삭제합니다."""
     logger.info(f"댓글 삭제 시작 (comment_id: {comment_id})")
@@ -565,7 +547,6 @@ async def handle_delete_comment(page: Page, comment_id: str) -> Dict[str, Any]:
         }
 
 
-@retry_on_error
 async def handle_get_stats(page: Page) -> Dict[str, Any]:
     """블로그 통계를 조회합니다."""
     logger.info("블로그 통계 조회 시작")

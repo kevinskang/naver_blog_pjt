@@ -8,6 +8,7 @@ from playwright.async_api import ElementHandle, Page
 
 from ..config import config
 from ..utils.error_handler import handle_playwright_error
+from ..utils.iframe_helper import get_editor_frame
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +127,7 @@ async def get_categories(
 
         # 2. iframe 접근
         try:
-            iframe_element = await page.wait_for_selector(
-                "iframe#mainFrame", timeout=10000
-            )
-            main_frame = await iframe_element.content_frame()
-            if main_frame is None:
-                raise RuntimeError("iframe content_frame 반환 실패")
+            main_frame = await get_editor_frame(page, timeout=10000)
             logger.info("iframe#mainFrame 접근 성공")
         except Exception as e:
             logger.error("iframe 접근 실패: %s", e)

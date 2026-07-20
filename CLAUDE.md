@@ -159,7 +159,8 @@ uv run python tests/test_image_upload_research.py
   ```bash
   pyright src/
   ```
-- 오류가 있으면 수정 후 재확인 (현재 기존 오류 22개 존재 — 신규 작업으로 오류가 **늘어나지 않도록** 유지)
+- `pyproject.toml`의 `[tool.pyright]`가 `.venv`를 사용하도록 설정되어 있어 의존성 import 오탐이 없다.
+- 오류가 있으면 수정 후 재확인 (현재 기존 오류 8개 존재 — 대부분 `content_frame()` Optional 접근 및 MCP 반환 타입. 신규 작업으로 오류가 **늘어나지 않도록** 유지)
 
 ### 린트 검사 (ruff)
 - 파일 수정 후 반드시 실행:
@@ -167,7 +168,7 @@ uv run python tests/test_image_upload_research.py
   ruff check src/
   ```
 - ruff 규칙: `E`, `F`, `I`, `B`, `C`, `S` (pyproject.toml 설정 기준)
-- 현재 기존 오류 57개 존재 — 신규 작업으로 오류가 **늘어나지 않도록** 유지
+- 현재 `src/` 기준 오류 0개 (통과 상태) — 신규 작업으로 오류가 **늘어나지 않도록** 유지
 - 자동 수정 가능한 항목: `ruff check src/ --fix`
 
 ## 하네스: 네이버 블로그 MCP 자동화

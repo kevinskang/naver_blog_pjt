@@ -61,18 +61,28 @@ class Config:
         """DEBUG 로그 레벨 여부를 반환합니다."""
         return cls.LOG_LEVEL == "DEBUG"
 
+    # ------------------------------------------------------------------
+    # 멀티 계정 자격증명/경로 해석 (단일 소스)
+    # account_id 가 없으면 기본 계정, 있으면
+    # NAVER_ACCOUNT_{ID}_ID / _PASSWORD 환경 변수를 사용한다.
+    # ------------------------------------------------------------------
     @classmethod
-    def get_account_blog_id(cls, account_id: Optional[str]) -> str:
-        """계정 식별자에 해당하는 블로그 ID를 가져옵니다."""
+    def get_account_id(cls, account_id: Optional[str]) -> str:
+        """계정 식별자에 해당하는 네이버 로그인 ID를 반환합니다."""
         if not account_id:
             return cls.NAVER_BLOG_ID
-        import os
-
         return os.getenv(f"NAVER_ACCOUNT_{account_id.upper()}_ID", "")
 
     @classmethod
+    def get_account_password(cls, account_id: Optional[str]) -> str:
+        """계정 식별자에 해당하는 네이버 비밀번호를 반환합니다."""
+        if not account_id:
+            return cls.NAVER_BLOG_PASSWORD
+        return os.getenv(f"NAVER_ACCOUNT_{account_id.upper()}_PASSWORD", "")
+
+    @classmethod
     def get_session_path(cls, account_id: Optional[str]) -> str:
-        """계정 식별자에 해당하는 세션 파일 경로를 가져옵니다."""
+        """계정 식별자에 해당하는 세션 파일 경로를 반환합니다."""
         if not account_id:
             return cls.SESSION_STORAGE_PATH
         return f"playwright-state/auth_{account_id}.json"

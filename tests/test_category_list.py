@@ -3,6 +3,11 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
+# 라이브 네이버 로그인이 필요한 테스트 — RUN_LIVE_TESTS=true 일 때만 실행
+pytestmark = pytest.mark.e2e
+
 # Windows 콘솔 인코딩 설정
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')

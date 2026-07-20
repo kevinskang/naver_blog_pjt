@@ -94,14 +94,10 @@ class NaverBlogMCPServer:
         if not account_id:
             return self.session_manager
         if account_id not in self._extra_session_managers:
-            import os
-            user_id = os.getenv(f"NAVER_ACCOUNT_{account_id.upper()}_ID", "")
-            password = os.getenv(f"NAVER_ACCOUNT_{account_id.upper()}_PASSWORD", "")
-            storage_path = f"playwright-state/auth_{account_id}.json"
             self._extra_session_managers[account_id] = SessionManager(
-                user_id=user_id,
-                password=password,
-                storage_path=storage_path,
+                user_id=config.get_account_id(account_id),
+                password=config.get_account_password(account_id),
+                storage_path=config.get_session_path(account_id),
                 account_id=account_id
             )
         return self._extra_session_managers[account_id]
@@ -156,63 +152,83 @@ class NaverBlogMCPServer:
             return [
                 {
                     "type": "text",
-                    "text": f"오류 발생: {str(e)}",
+                    "text": json.dumps(
+                        {"success": False, "message": f"오류 발생: {str(e)}"},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
                 }
             ]
 
-    async def _execute_tool(self, name: str, arguments: dict, page: Page) -> dict:  # noqa: C901
+    async def _validate_category(
+        self, account_id: Optional[str], category_param: str
+    ) -> None:
+        """지정한 카테고리가 존재하는지 검증합니다.
+
+        로컬 캐시에 없으면 네이버 실시간 조회로 강제 동기화하고,
+        그래도 없으면 ValueError를 발생시킵니다.
+        """
+        key = account_id or ""
+        if key not in self._categories or not self._categories[key]:
+            await self.load_categories(account_id, force_reload=False)
+
+        category_names = [c["name"] for c in self._categories.get(key, [])]
+        if category_param in category_names:
+            return
+
+        logger.info(
+            f"카테고리 '{category_param}'가 로컬 캐시에 없어 "
+            "네이버 실시간 조회를 통해 강제 동기화합니다."
+        )
+        categories = await self.load_categories(account_id, force_reload=True)
+        category_names = [c["name"] for c in categories]
+        if category_param not in category_names:
+            raise ValueError(
+                f"카테고리 '{category_param}'가 존재하지 않습니다. "
+                "현재 등록된 카테고리 목록: "
+                f"{', '.join(category_names) or '(없음)'}. "
+                "네이버 블로그 설정에서 먼저 카테고리를 생성해주세요."
+            )
+        logger.info(
+            "실시간 조회 결과 카테고리가 확인되었습니다. "
+            "로컬 캐시가 성공적으로 업데이트되었습니다."
+        )
+
+    async def _resolve_create_category(
+        self, account_id: Optional[str], category_param: Optional[str]
+    ) -> Optional[str]:
+        """글 작성 시 카테고리를 결정합니다.
+
+        - 지정된 경우: 존재 여부를 검증합니다.
+        - 미지정인 경우: 가장 상단 카테고리를 자동 선택합니다(없으면 None).
+        """
+        if category_param:
+            await self._validate_category(account_id, category_param)
+            return category_param
+
+        key = account_id or ""
+        if key not in self._categories or not self._categories[key]:
+            await self.load_categories(account_id, force_reload=False)
+        categories = self._categories.get(key, [])
+        if categories:
+            top = categories[0]["name"]
+            logger.info(
+                f"카테고리가 명시되지 않아 가장 상단 카테고리 '{top}'로 설정합니다."
+            )
+            return top
+
+        logger.warning("블로그에 카테고리가 존재하지 않습니다.")
+        return None
+
+    async def _execute_tool(self, name: str, arguments: dict, page: Page) -> dict:
         """Tool 이름에 따라 적절한 핸들러를 호출합니다."""
         account_id = arguments.get("account_id")
-        if name == "naver_blog_create_post":
-            # 1. 카테고리 캐시 검사 및 로딩
-            key = account_id or ""
-            if key not in self._categories or not self._categories[key]:
-                await self.load_categories(account_id, force_reload=False)
-                
-            categories = self._categories.get(key, [])
-            category_param = arguments.get("category")
-            
-            if not category_param:
-                # 카테고리가 지정되지 않은 경우: 제일 상단 카테고리 자동 설정
-                if categories:
-                    category_param = categories[0]["name"]
-                    logger.info(
-                        "카테고리가 명시되지 않아 가장 상단 카테고리 "
-                        f"'{category_param}'로 설정합니다."
-                    )
-                else:
-                    logger.warning("블로그에 카테고리가 존재하지 않습니다.")
-            else:
-                # 1단계 검증: 로컬 캐시 확인
-                category_names = [c["name"] for c in categories]
-                if category_param not in category_names:
-                    logger.info(
-                        f"지정한 카테고리 '{category_param}'가 로컬 캐시에 없어 "
-                        "네이버 실시간 조회를 통해 강제 동기화합니다."
-                    )
-                    
-                    # 2단계 검증: 네이버 블로그 직접 강제 조회
-                    categories = await self.load_categories(
-                        account_id, force_reload=True
-                    )
-                    category_names = [c["name"] for c in categories]
-                    
-                    # 3단계: 양쪽 모두 부재 시 에러 처리
-                    if category_param not in category_names:
-                        err_msg = (
-                            f"지정하신 카테고리 '{category_param}'가 "
-                            "존재하지 않습니다. "
-                            "현재 등록된 카테고리 목록: "
-                            f"{', '.join(category_names) or '(없음)'}. "
-                            "네이버 블로그 설정에서 먼저 카테고리를 생성해주세요."
-                        )
-                        raise ValueError(err_msg)
-                    else:
-                        logger.info(
-                            "실시간 조회 결과 카테고리가 확인되었습니다. "
-                            "로컬 캐시가 성공적으로 업데이트되었습니다."
-                        )
 
+        # 카테고리 검증 등 사전 처리가 필요한 도구는 개별 분기로 처리합니다.
+        if name == "naver_blog_create_post":
+            category_param = await self._resolve_create_category(
+                account_id, arguments.get("category")
+            )
             return await handle_create_post(
                 page=page,
                 title=arguments["title"],
@@ -224,47 +240,11 @@ class NaverBlogMCPServer:
                 schedule_time=arguments.get("schedule_time"),
                 content_format=arguments.get("content_format", "text"),
             )
-        elif name == "naver_blog_delete_post":
-            return await handle_delete_post(page=page, post_url=arguments["post_url"])
-        elif name == "naver_blog_check_session":
-            return await handle_check_session(page=page)
-        elif name == "naver_blog_edit_post":
-            # 카테고리 변경 시에만 검증 수행
+
+        if name == "naver_blog_edit_post":
             category_param = arguments.get("category")
             if category_param:
-                key = account_id or ""
-                if key not in self._categories or not self._categories[key]:
-                    await self.load_categories(account_id, force_reload=False)
-                
-                categories = self._categories.get(key, [])
-                category_names = [c["name"] for c in categories]
-                if category_param not in category_names:
-                    logger.info(
-                        f"변경할 카테고리 '{category_param}'가 로컬 캐시에 없어 "
-                        "네이버 실시간 조회를 통해 강제 동기화합니다."
-                    )
-                    
-                    # 2단계 검증
-                    categories = await self.load_categories(
-                        account_id, force_reload=True
-                    )
-                    category_names = [c["name"] for c in categories]
-                    
-                    if category_param not in category_names:
-                        err_msg = (
-                            f"변경할 카테고리 '{category_param}'가 "
-                            "존재하지 않습니다. "
-                            "현재 등록된 카테고리 목록: "
-                            f"{', '.join(category_names) or '(없음)'}. "
-                            "네이버 블로그 설정에서 먼저 카테고리를 생성해주세요."
-                        )
-                        raise ValueError(err_msg)
-                    else:
-                        logger.info(
-                            "실시간 조회 결과 카테고리가 확인되었습니다. "
-                            "로컬 캐시가 성공적으로 업데이트되었습니다."
-                        )
-
+                await self._validate_category(account_id, category_param)
             return await handle_edit_post(
                 page=page,
                 post_url=arguments["post_url"],
@@ -273,32 +253,9 @@ class NaverBlogMCPServer:
                 category=category_param,
                 tags=arguments.get("tags"),
             )
-        elif name == "naver_blog_list_posts":
-            return await handle_list_posts(
-                page=page, limit=arguments.get("limit", 10)
-            )
-        elif name == "naver_blog_list_drafts":
-            return await handle_list_drafts(page=page)
-        elif name == "naver_blog_publish_draft":
-            return await handle_publish_draft(page=page, draft_id=arguments["draft_id"])
-        elif name == "naver_blog_delete_draft":
-            return await handle_delete_draft(
-                page=page,
-                draft_id=arguments.get("draft_id"),
-                title=arguments.get("title"),
-            )
-        elif name == "naver_blog_list_comments":
-            return await handle_list_comments(
-                page=page, limit=arguments.get("limit", 10)
-            )
-        elif name == "naver_blog_delete_comment":
-            return await handle_delete_comment(
-                page=page, comment_id=arguments["comment_id"]
-            )
-        elif name == "naver_blog_get_stats":
-            return await handle_get_stats(page=page)
-        elif name == "naver_blog_list_categories":
-            # 항상 force_reload=True로 호출하여 최신 카테고리를 긁어오고 캐시를 동기화합니다.  # noqa: E501
+
+        if name == "naver_blog_list_categories":
+            # 항상 force_reload=True로 최신 카테고리를 조회하고 캐시를 동기화합니다.
             categories_data = await self.load_categories(account_id, force_reload=True)
             return {
                 "success": True,
@@ -306,10 +263,40 @@ class NaverBlogMCPServer:
                     f"{len(categories_data)}개의 카테고리를 조회하고 "
                     "캐시를 갱신했습니다."
                 ),
-                "categories": categories_data
+                "categories": categories_data,
             }
 
-        raise ValueError(f"알 수 없는 Tool: {name}")
+        # 인자 언패킹만 다른 단순 도구는 디스패치 테이블로 라우팅합니다.
+        simple_handlers = {
+            "naver_blog_delete_post": lambda: handle_delete_post(
+                page=page, post_url=arguments["post_url"]
+            ),
+            "naver_blog_check_session": lambda: handle_check_session(page=page),
+            "naver_blog_list_posts": lambda: handle_list_posts(
+                page=page, limit=arguments.get("limit", 10)
+            ),
+            "naver_blog_list_drafts": lambda: handle_list_drafts(page=page),
+            "naver_blog_publish_draft": lambda: handle_publish_draft(
+                page=page, draft_id=arguments["draft_id"]
+            ),
+            "naver_blog_delete_draft": lambda: handle_delete_draft(
+                page=page,
+                draft_id=arguments.get("draft_id"),
+                title=arguments.get("title"),
+            ),
+            "naver_blog_list_comments": lambda: handle_list_comments(
+                page=page, limit=arguments.get("limit", 10)
+            ),
+            "naver_blog_delete_comment": lambda: handle_delete_comment(
+                page=page, comment_id=arguments["comment_id"]
+            ),
+            "naver_blog_get_stats": lambda: handle_get_stats(page=page),
+        }
+
+        handler = simple_handlers.get(name)
+        if handler is None:
+            raise ValueError(f"알 수 없는 Tool: {name}")
+        return await handler()
 
     async def _ensure_session_for(self, account_id: Optional[str]) -> None:
         """지정된 계정의 세션이 없거나 만료된 경우 재로그인 시도합니다."""
@@ -361,7 +348,7 @@ class NaverBlogMCPServer:
     ) -> list[dict]:
         """지정된 계정의 블로그 카테고리를 가져와서 캐싱합니다.
 
-        로컬 캐시 파일이 존재하면 이를 우선 읽어오고, 
+        로컬 캐시 파일이 존재하면 이를 우선 읽어오고,
         없을 때만 네이버에 직접 접속합니다.
         """
         key = account_id or ""
@@ -505,16 +492,25 @@ class NaverBlogMCPServer:
         self._extra_contexts.clear()
 
         if self.context:
-            await self.context.close()
-            logger.info("Browser context closed")
+            try:
+                await self.context.close()
+                logger.info("Browser context closed")
+            except Exception as e:
+                logger.warning(f"Error closing default context: {e}")
 
         if self.browser:
-            await self.browser.close()
-            logger.info("Browser closed")
+            try:
+                await self.browser.close()
+                logger.info("Browser closed")
+            except Exception as e:
+                logger.warning(f"Error closing browser: {e}")
 
         if self.playwright:
-            await self.playwright.stop()
-            logger.info("Playwright stopped")
+            try:
+                await self.playwright.stop()
+                logger.info("Playwright stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping playwright: {e}")
 
     async def get_page(self, account_id: Optional[str] = None) -> Page:
         """세션을 확인하고 페이지를 반환합니다."""

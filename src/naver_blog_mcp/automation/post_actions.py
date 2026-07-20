@@ -1,8 +1,13 @@
-"""네이버 블로그 글쓰기 자동화."""
+"""네이버 블로그 글쓰기 자동화.
+
+이 모듈은 발행/카테고리/태그/예약/글 관리 오케스트레이션을 담당한다.
+에디터 입력 로직은 ``editor_input.py``, 임시저장 로직은 ``draft_actions.py``
+로 분리되어 있으며, 하위호환을 위해 해당 심볼들을 이 모듈에서 re-export 한다.
+따라서 ``from ...post_actions import X`` 는 분리 이전과 동일하게 동작한다.
+"""
 
 import asyncio
 import logging
-import re
 from typing import Any, Dict, Optional
 
 from playwright.async_api import Page
@@ -11,14 +16,61 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import PostError
 from ..utils.iframe_helper import get_editor_frame
-from ..utils.selector_helper import dismiss_overlays, find_element_with_alternatives
+from ..utils.selector_helper import dismiss_overlays
+
+# --- 하위호환 re-export (분리된 모듈의 심볼을 이 모듈 이름공간에 노출) ---
+# create_blog_post 는 아래 심볼들을 호출하므로 실사용이기도 하다.
+from .draft_actions import (
+    _open_draft_list_frame,
+    delete_draft,
+    list_draft_posts,
+    publish_draft,
+    save_post_as_draft,
+)
+from .editor_input import (
+    _paste_html_into_body,
+    _type_content_direct,
+    _type_content_in_iframe,
+    fill_post_content,
+    fill_post_title,
+    navigate_to_post_write_page,
+)
 from .selectors import (
     POST_WRITE_CONTENT_BODY,
     POST_WRITE_PUBLISH_BTN,
-    POST_WRITE_TITLE,
+    PUBLISH_CATEGORY_SELECT_BTN,
+    PUBLISH_CONFIRM_BTN,
+    PUBLISH_TAG_INPUT,
 )
 
 logger = logging.getLogger(__name__)
+
+# ``__all__`` 에 등재하여 re-export 심볼이 ruff F401(미사용 import)로 오탐되지
+# 않도록 한다. 외부 모듈(tools.py/tests/scripts)의 import 경로 호환을 보장한다.
+__all__ = [
+    "NaverBlogPostError",
+    "_click_final_publish_button",
+    "_close_page_popups",
+    "_fill_tags",
+    "_open_draft_list_frame",
+    "_paste_html_into_body",
+    "_select_category",
+    "_set_schedule_in_frame",
+    "_type_content_direct",
+    "_type_content_in_iframe",
+    "create_blog_post",
+    "delete_blog_post",
+    "delete_draft",
+    "edit_blog_post",
+    "fill_post_content",
+    "fill_post_title",
+    "list_blog_posts",
+    "list_draft_posts",
+    "navigate_to_post_write_page",
+    "publish_draft",
+    "publish_post",
+    "save_post_as_draft",
+]
 
 
 async def _select_category(page: Page, category_name: str) -> bool:
@@ -32,15 +84,13 @@ async def _select_category(page: Page, category_name: str) -> bool:
     # 방법 0: 검증된 스마트에디터 ONE 카테고리 셀렉터
     main_frame = None
     try:
-        iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=5000)
-        if iframe_element is not None:
-            main_frame = await iframe_element.content_frame()
+        main_frame = await get_editor_frame(page, timeout=5000)
     except Exception:  # noqa: S110
         main_frame = None
 
     if main_frame is not None:
         try:
-            toggle = main_frame.locator("button.selectbox_button__jb1Dt").first
+            toggle = main_frame.locator(PUBLISH_CATEGORY_SELECT_BTN).first
             if await toggle.count() > 0:
                 await toggle.click(timeout=3000)
                 await asyncio.sleep(0.8)
@@ -124,7 +174,7 @@ async def _fill_tags(page: Page, tags: list) -> bool:
         try:
             tag_selectors = [
                 "input#tag-input",
-                "input.tag_input__rvUB5",  # 라이브 검증 (스마트에디터 ONE)
+                PUBLISH_TAG_INPUT,  # 라이브 검증 (스마트에디터 ONE)
                 "input[placeholder*='태그']",
                 ".tag_input input",
                 "#tagInput",
@@ -156,428 +206,7 @@ async def _close_page_popups(page: Page) -> None:
     await dismiss_overlays(page)
 
 
-async def _type_content_in_iframe(iframe, content: str) -> bool:
-    """Type content into iframe's contenteditable body selectors."""
-    body_selectors = (
-        POST_WRITE_CONTENT_BODY
-        if isinstance(POST_WRITE_CONTENT_BODY, list)
-        else [POST_WRITE_CONTENT_BODY]
-    )
-
-    for body_selector in body_selectors:
-        try:
-            content_body = await iframe.wait_for_selector(body_selector, timeout=5000)
-            if content_body:
-                await content_body.click()
-                await content_body.fill(content)
-                logger.info("본문 입력 완료 (iframe 방식, selector: %s)", body_selector)
-                return True
-        except Exception:
-            continue
-
-    return False
-
-
-async def _type_content_direct(page: Page, content: str) -> bool:
-    """Type content directly into contenteditable on the main page."""
-    content_selectors = [
-        "div[contenteditable='true']:not([data-placeholder='제목'])",
-        "div[contenteditable='true'][role='textbox']",
-        "div.se-component",
-        "div:has-text('글감과 함께')",
-    ]
-
-    for selector in content_selectors:
-        try:
-            locator = page.locator(selector).first
-            if await locator.count() > 0:
-                await locator.click()
-                await locator.fill(content)
-                logger.info("본문 입력 완료 (직접 방식, selector: %s)", selector)
-                return True
-        except Exception:
-            continue
-
-    return False
-
-
 NaverBlogPostError = PostError  # legacy alias for compatibility
-
-
-async def navigate_to_post_write_page(
-    page: Page, blog_id: Optional[str] = None, timeout: int = 30000
-) -> None:
-    """
-    네이버 블로그 글쓰기 페이지로 이동합니다.
-
-    Args:
-        page: Playwright Page 객체
-        blog_id: 블로그 ID (옵션, 없으면 자동으로 현재 로그인된 블로그 사용)
-        timeout: 페이지 로딩 대기 시간 (ms)
-
-    Raises:
-        NaverBlogPostError: 페이지 이동 실패 시
-    """
-    try:
-        # 방법 1: blog_id가 주어진 경우
-        url: str
-        if blog_id:
-            url = f"https://blog.naver.com/{blog_id}/postwrite"
-        else:
-            # 방법 2: 블로그 메인에서 글쓰기 버튼 찾아서 클릭
-            await page.goto(
-                "https://blog.naver.com", wait_until="networkidle", timeout=timeout
-            )
-
-            write_btn_selectors = [
-                "a[href*='postwrite']",
-                "a:has-text('글쓰기')",
-                "button:has-text('글쓰기')",
-            ]
-
-            url = "https://blog.naver.com/postwrite"  # 기본값 선언
-            for selector in write_btn_selectors:
-                count = await page.locator(selector).count()
-                if count > 0:
-                    element = page.locator(selector).first
-                    href = await element.get_attribute("href")
-                    if href:
-                        if href.startswith("/"):
-                            url = f"https://blog.naver.com{href}"
-                        elif href.startswith("http"):
-                            url = href
-                        else:
-                            url = f"https://blog.naver.com/{href}"
-                        logger.info("글쓰기 버튼 발견: %s", url)
-                        break
-            else:
-                logger.info("글쓰기 버튼을 찾지 못했습니다. 기본 URL 사용: %s", url)
-
-        await page.goto(url, wait_until="networkidle", timeout=timeout)
-
-        current_url = page.url
-        logger.info("현재 URL: %s", current_url)
-
-        if (
-            "postwrite" in current_url.lower()
-            or "PostWriteForm" in current_url
-            or "Redirect=Write" in current_url
-        ):
-            logger.info("글쓰기 페이지로 이동: %s", current_url)
-            return
-
-        # 제목 입력란 확인 (추가 검증)
-        title_input_exists = False
-        selectors = (
-            POST_WRITE_TITLE
-            if isinstance(POST_WRITE_TITLE, list)
-            else [POST_WRITE_TITLE]
-        )
-        for selector in selectors:
-            count = await page.locator(selector).count()
-            if count > 0:
-                title_input_exists = True
-                logger.debug("제목 입력란 발견: %s", selector)
-                break
-
-        if title_input_exists:
-            logger.info("글쓰기 페이지로 이동: %s", url)
-            return
-
-        raise NaverBlogPostError(
-            f"글쓰기 페이지 로딩에 실패했습니다. 현재 URL: {current_url}"
-        )
-
-    except PlaywrightTimeout as e:
-        raise NaverBlogPostError(f"글쓰기 페이지 이동 시간 초과: {str(e)}") from e
-    except NaverBlogPostError:
-        raise
-    except Exception as e:
-        logger.debug("글쓰기 페이지 이동 중 예외 발생", exc_info=True)
-        raise NaverBlogPostError(f"글쓰기 페이지 이동 중 오류: {str(e)}") from e
-
-
-async def fill_post_title(page: Page, title: str, move_to_body: bool = True) -> None:
-    """
-    블로그 글 제목을 입력합니다.
-
-    Args:
-        page: Playwright Page 객체
-        title: 글 제목
-        move_to_body: True면 제목 입력 후 Enter를 눌러 캐럿을 본문 첫 문단으로
-            이동시킵니다(기본값). 스마트에디터 ONE의 제목은 단일 행이며 Enter 시
-            포커스가 본문으로 넘어가므로, 본문 요소를 별도로 찾다 제목에 본문이
-            잘못 입력되는 문제를 예방합니다.
-
-    Raises:
-        NaverBlogPostError: 제목 입력 실패 시
-    """
-    try:
-        # 제목 입력란 찾기 (대체 셀렉터 시도)
-        title_filled = False
-
-        try:
-            locator = await find_element_with_alternatives(
-                page,
-                POST_WRITE_TITLE,
-                timeout=5000,
-                context="title_input",
-            )
-            is_contenteditable = await locator.get_attribute("contenteditable")
-            await locator.click()
-            if is_contenteditable:
-                await locator.type(title, delay=50)
-            else:
-                await locator.fill(title)
-            title_filled = True
-            logger.info(f"제목 입력 완료: {title}")
-        except Exception as e:
-            logger.debug(f"제목 입력 대체 셀렉터 실패: {e}")
-
-        if not title_filled:
-            try:
-                await page.mouse.click(450, 250)
-                await page.keyboard.type(title, delay=50)
-                title_filled = True
-                logger.info(f"제목 입력 완료 (클릭 방식): {title}")
-            except Exception as e:
-                logger.debug(f"제목 클릭 방식 실패: {e}")
-
-        if not title_filled:
-            try:
-                await page.keyboard.press("Tab")
-                await page.keyboard.type(title, delay=50)
-                title_filled = True
-                logger.info(f"제목 입력 완료 (Tab 방식): {title}")
-            except Exception as e:
-                logger.debug(f"제목 Tab 방식 실패: {e}")
-
-        if not title_filled:
-            raise NaverBlogPostError("제목 입력란을 찾을 수 없습니다.")
-
-        # 제목 입력 직후 Enter를 눌러 캐럿을 본문 첫 문단으로 이동시킨다.
-        # 스마트에디터 ONE의 제목은 단일 행이므로 Enter 시 포커스가 본문으로 넘어간다.
-        # 본문 요소를 별도로 찾아 클릭하다 제목에 본문이 잘못 입력되는 문제를 예방한다.
-        if move_to_body:
-            try:
-                await page.keyboard.press("Enter")
-                await asyncio.sleep(0.3)
-                logger.info("제목 입력 후 Enter로 본문 영역으로 캐럿 이동")
-            except Exception as e:  # noqa: BLE001
-                logger.debug(f"제목 Enter 본문 이동 실패(무시하고 계속): {e}")
-
-        await asyncio.sleep(0.5)
-
-    except NaverBlogPostError:
-        raise
-    except Exception as e:
-        raise NaverBlogPostError(f"제목 입력 중 오류: {str(e)}") from e
-
-
-async def _paste_html_into_body(page: Page, html: str) -> bool:
-    """HTML 본문을 서식 보존하여 붙여넣기(ClipboardEvent)로 주입합니다.
-
-    스마트에디터 ONE 편집 프레임(``iframe#mainFrame``)에는 제목과 본문을 함께
-    포함하는 contenteditable이 1개뿐이므로, 본문 문단
-    (``.se-component.se-text .se-text-paragraph``)을 클릭해 캐럿을 본문에 둔 뒤
-    단일 contenteditable에 ``paste`` 이벤트를 디스패치한다. 이렇게 하면 마크다운
-    표·굵게·목록 등 서식이 네이버 에디터 서식으로 보존된다.
-    """
-    main_frame = None
-    try:
-        iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=10000)
-        if iframe_element is not None:
-            main_frame = await iframe_element.content_frame()
-    except Exception:  # noqa: S110
-        main_frame = None
-    if main_frame is None:
-        return False
-
-    # 로드 복원 팝업 취소 + 도움말 오버레이 닫기
-    try:
-        popup = main_frame.locator("button.se-popup-button-cancel").first
-        if await popup.count() > 0 and await popup.is_visible():
-            await popup.click(timeout=2000)
-            await asyncio.sleep(0.3)
-    except Exception:  # noqa: S110
-        pass
-    try:
-        await main_frame.evaluate(
-            """() => { document.querySelectorAll('.se-help-panel-close-button')
-                .forEach(b => { try { b.click(); } catch (e) {} }); }"""
-        )
-    except Exception:  # noqa: S110
-        pass
-
-    # 본문 문단 클릭 → 캐럿을 본문에 위치
-    try:
-        body_para = main_frame.locator(
-            ".se-component.se-text .se-text-paragraph"
-        ).first
-        if await body_para.count() > 0:
-            await body_para.click()
-            await asyncio.sleep(0.3)
-    except Exception:  # noqa: S110
-        pass
-
-    plain = re.sub(r"<[^>]*>", "", html)
-    pasted = await main_frame.evaluate(
-        """({html, plain}) => {
-            let target = document.activeElement;
-            if (target && target.closest) {
-                const ce = target.closest('[contenteditable="true"]');
-                if (ce) target = ce;
-            }
-            if (!target || target.getAttribute('contenteditable') !== 'true') {
-                target = document.querySelector('[contenteditable="true"]');
-            }
-            if (!target) return false;
-            const dt = new DataTransfer();
-            dt.setData('text/html', html);
-            dt.setData('text/plain', plain);
-            const ev = new ClipboardEvent('paste', {
-                clipboardData: dt, bubbles: true, cancelable: true
-            });
-            target.dispatchEvent(ev);
-            return true;
-        }""",
-        {"html": html, "plain": plain},
-    )
-    await asyncio.sleep(2)
-    return bool(pasted)
-
-
-async def fill_post_content(  # noqa: C901
-    page: Page, content: str, use_html: bool = False
-) -> None:
-    """
-    블로그 글 본문을 입력합니다.
-
-    스마트에디터 ONE의 본문은 ``iframe#mainFrame`` 내부의
-    ``.se-component.se-text`` 텍스트 컴포넌트 문단(contenteditable)에 있습니다.
-    (제목은 별도의 ``.se-documentTitle`` 컴포넌트이므로 본문 문단과 구분된다.)
-
-    Args:
-        page: Playwright Page 객체
-        content: 글 본문 내용
-        use_html: HTML 모드로 입력할지 여부 (기본: False, 텍스트 모드)
-
-    Raises:
-        NaverBlogPostError: 본문 입력 실패 시
-    """
-    try:
-        # HTML(마크다운 변환본 포함) 본문은 서식 보존 paste 방식으로 주입
-        if use_html:
-            if await _paste_html_into_body(page, content):
-                logger.info("본문 입력 완료 (HTML paste 방식)")
-                await asyncio.sleep(1)
-                return
-            logger.warning("HTML paste 실패 — 텍스트 방식으로 폴백")
-            content = re.sub(r"<[^>]*>", "", content)  # 폴백: 태그 제거 평문
-
-        await _close_page_popups(page)
-
-        content_filled = False
-
-        # iframe#mainFrame(스마트에디터 ONE) 진입 후 본문 입력.
-        # 방법 0=제목 Enter 후 캐럿 타이핑, 방법 1=본문 셀렉터 클릭 타이핑
-        main_frame = None
-        try:
-            iframe_element = await page.wait_for_selector(
-                "iframe#mainFrame", timeout=10000
-            )
-            if iframe_element is not None:
-                main_frame = await iframe_element.content_frame()
-        except Exception:
-            main_frame = None
-
-        if main_frame is not None:
-            # 로드 시 뜨는 '작성 중인 글' 등 팝업을 닫아 에디터를 활성화한다.
-            for popup_sel in (
-                "button.se-popup-button-cancel",
-                "button.se-popup-button-confirm",
-            ):
-                try:
-                    popup = main_frame.locator(popup_sel).first
-                    if await popup.count() > 0 and await popup.is_visible():
-                        await popup.click(timeout=2000)
-                        await asyncio.sleep(0.5)
-                except Exception:  # noqa: S112
-                    continue
-
-            # 방법 0(우선): 제목 입력 후 Enter로 이미 본문 문단에 캐럿이 놓인 경우,
-            # 현재 캐럿 위치(본문)에 바로 타이핑한다. 본문 요소를 별도로 찾아 클릭하다
-            # 제목 문단에 본문이 잘못 입력되는 문제를 근본적으로 방지한다.
-            try:
-                caret_in_body = await main_frame.evaluate(
-                    """() => {
-                        const el = document.activeElement;
-                        if (!el || typeof el.closest !== 'function') {
-                            return false;
-                        }
-                        // 제목 컴포넌트에 포커스가 남아 있으면 본문이 아님
-                        if (el.closest('.se-documentTitle, .se-title-text')) {
-                            return false;
-                        }
-                        const ph = el.getAttribute
-                            && el.getAttribute('data-placeholder');
-                        if (ph === '제목') return false;
-                        // 본문 텍스트 컴포넌트/편집 가능한 영역이면 본문으로 간주
-                        if (el.closest('.se-component.se-text')) return true;
-                        return el.getAttribute
-                            && el.getAttribute('contenteditable') === 'true';
-                    }"""
-                )
-            except Exception:  # noqa: BLE001
-                caret_in_body = False
-
-            if caret_in_body:
-                try:
-                    await page.keyboard.type(content, delay=10)
-                    logger.info("본문 입력 완료 (제목 Enter 후 캐럿 위치 방식)")
-                    content_filled = True
-                except Exception as e:  # noqa: BLE001
-                    logger.debug(
-                        f"캐럿 위치 본문 입력 실패, 셀렉터 방식으로 전환: {e}"
-                    )
-
-            # 방법 1(폴백): 본문 텍스트 컴포넌트를 직접 클릭 후 타이핑
-            # (제목 문단 오입력 방지를 위해 본문 컴포넌트만 대상으로 한다.)
-            if not content_filled:
-                body_selectors = (
-                    ".se-component.se-text .se-text-paragraph",
-                    ".se-component.se-text",
-                )
-                for sel in body_selectors:
-                    try:
-                        body = main_frame.locator(sel).first
-                        if await body.count() > 0:
-                            await body.click()
-                            await asyncio.sleep(0.3)
-                            await page.keyboard.type(content, delay=10)
-                            logger.info(
-                                "본문 입력 완료 (mainFrame, selector: %s)", sel
-                            )
-                            content_filled = True
-                            break
-                    except Exception:  # noqa: S112
-                        continue
-
-        # 방법 2: iframe 없이 직접 contenteditable (구형/폴백)
-        if not content_filled:
-            content_filled = await _type_content_direct(page, content)
-
-        if not content_filled:
-            raise NaverBlogPostError("본문 입력 영역을 찾을 수 없습니다.")
-
-        await asyncio.sleep(1)
-
-    except NaverBlogPostError:
-        raise
-    except PlaywrightTimeout as e:
-        raise NaverBlogPostError(f"본문 입력 시간 초과: {str(e)}") from e
-    except Exception as e:
-        raise NaverBlogPostError(f"본문 입력 중 오류: {str(e)}") from e
 
 
 async def _click_final_publish_button(page: Page) -> bool:
@@ -586,7 +215,7 @@ async def _click_final_publish_button(page: Page) -> bool:
     for frame in page.frames:
         try:
             dialog_publish_selectors = [
-                "button.confirm_btn__WEaBq",  # 라이브 검증 (최종 발행)
+                PUBLISH_CONFIRM_BTN,  # 라이브 검증 (최종 발행)
                 ".layer_popup__i0QOY button[class*='confirm']:has-text('발행')",
                 ".layer_popup__i0QOY button:has-text('발행')",
             ]
@@ -807,49 +436,6 @@ async def publish_post(  # noqa: C901
     except Exception as e:
         custom_error = await handle_playwright_error(e, page, "publish_post")
         raise NaverBlogPostError(f"발행 중 오류: {str(custom_error)}") from e
-
-
-async def save_post_as_draft(page: Page) -> Dict[str, Any]:
-    """작성 중인 글을 임시저장합니다 (공개 발행하지 않음).
-
-    스마트에디터 ONE 상단 툴바의 '저장'(임시저장) 버튼을 클릭한다.
-    버튼 class(save_btn__XXXXX)의 해시 접미사는 배포마다 바뀌므로
-    class 접두 매칭과 정확 텍스트 매칭을 함께 사용한다.
-    """
-    save_selectors = [
-        "button[class*='save_btn']",
-        "button:text-is('저장')",
-    ]
-
-    main_frame = None
-    try:
-        iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=10000)
-        if iframe_element is not None:
-            main_frame = await iframe_element.content_frame()
-    except Exception:
-        main_frame = None
-
-    scopes = ([main_frame] if main_frame is not None else []) + [page]
-    for scope in scopes:
-        for sel in save_selectors:
-            try:
-                btn = scope.locator(sel).first
-                if await btn.count() > 0:
-                    # 최초 진입 시 뜨는 '도움말' 캐러셀 오버레이가 저장 버튼 위를
-                    # 덮어 일반 클릭이 가로채질 수 있다. 요소의 native click을 직접
-                    # 호출하여 오버레이와 무관하게 저장 핸들러를 실행한다.
-                    await btn.evaluate("el => el.click()")
-                    await asyncio.sleep(1.5)
-                    logger.info("임시저장 완료 (selector: %s)", sel)
-                    return {
-                        "success": True,
-                        "message": "임시저장되었습니다.",
-                        "post_url": None,
-                    }
-            except Exception:  # noqa: S112
-                continue
-
-    raise NaverBlogPostError("임시저장 버튼을 찾을 수 없습니다.")
 
 
 async def create_blog_post(
@@ -1215,228 +801,3 @@ async def list_blog_posts(page: Page, limit: int = 10) -> Dict[str, Any]:
     except Exception as e:
         custom_error = await handle_playwright_error(e, page, "list_blog_posts")
         raise PostError(f"글 목록 조회 실패: {str(custom_error)}") from e
-
-
-async def _open_draft_list_frame(page: Page):
-    """글쓰기 페이지에서 임시저장 목록 팝업을 열고 (frame, opened)를 반환합니다.
-
-    스마트에디터 ONE 기준 라이브 검증된 흐름:
-    - ``iframe#mainFrame`` 진입 → 로드 복원 팝업 취소 → 도움말 오버레이 닫기
-    - 임시저장 카운트 버튼(``button.save_count_btn__ZTLNa``)을 native click 으로
-      눌러 목록을 연다(도움말 오버레이가 일반 클릭을 가로채므로 JS click 사용).
-    """
-    await navigate_to_post_write_page(page)
-    await asyncio.sleep(2)
-
-    iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=10000)
-    frame = await iframe_element.content_frame()
-    if frame is None:
-        raise PostError("임시저장 목록을 위해 iframe#mainFrame에 접근할 수 없습니다.")
-
-    # 로드 시 뜨는 '작성 중인 글 불러오기' 팝업은 취소해 빈 문서에서 시작
-    try:
-        cancel = frame.locator("button.se-popup-button-cancel").first
-        if await cancel.count() > 0 and await cancel.is_visible():
-            await cancel.click(timeout=2000)
-            await asyncio.sleep(0.5)
-    except Exception:  # noqa: S110
-        pass
-
-    # 도움말 오버레이가 버튼 클릭을 가로채므로 닫는다
-    try:
-        await frame.evaluate(
-            """() => {
-                document.querySelectorAll('.se-help-panel-close-button')
-                    .forEach(b => { try { b.click(); } catch (e) {} });
-            }"""
-        )
-        await asyncio.sleep(0.3)
-    except Exception:  # noqa: S110
-        pass
-
-    # 임시저장 목록 열기 (native click 으로 오버레이 우회)
-    opened = await frame.evaluate(
-        """() => {
-            const b = document.querySelector('button.save_count_btn__ZTLNa');
-            if (b) { b.click(); return true; }
-            return false;
-        }"""
-    )
-    if opened:
-        await asyncio.sleep(1.5)
-    return frame, opened
-
-
-async def list_draft_posts(page: Page) -> Dict[str, Any]:
-    """임시저장 글 목록을 조회합니다."""
-    try:
-        frame, opened = await _open_draft_list_frame(page)
-        if not opened:
-            return {
-                "success": True,
-                "message": "임시저장 글이 없습니다.",
-                "drafts": [],
-            }
-
-        drafts = await frame.evaluate(
-            """() => {
-                const items = Array.from(
-                    document.querySelectorAll('li.item__mm7Zd')
-                );
-                return items.map((li, i) => {
-                    const s = li.querySelector('strong.title__p1G9u');
-                    const d = li.querySelector('span.date__toLrn');
-                    return {
-                        draft_id: String(i),
-                        title: s ? s.textContent.trim()
-                                 : ('임시저장 글 #' + (i + 1)),
-                        date: d ? d.textContent.trim() : ''
-                    };
-                });
-            }"""
-        )
-        return {
-            "success": True,
-            "message": f"{len(drafts)}개의 임시저장 글을 조회했습니다.",
-            "drafts": drafts,
-        }
-    except PostError:
-        raise
-    except Exception as e:
-        custom_error = await handle_playwright_error(e, page, "list_draft_posts")
-        raise PostError(f"임시저장 글 목록 조회 실패: {str(custom_error)}") from e
-
-
-async def publish_draft(page: Page, draft_id: str) -> Dict[str, Any]:
-    """임시저장된 글을 발행합니다 (draft_id = 목록 인덱스 문자열)."""
-    try:
-        frame, opened = await _open_draft_list_frame(page)
-        if not opened:
-            raise PostError("임시저장 목록을 열 수 없습니다 (임시저장 글이 없음).")
-
-        try:
-            idx = int(draft_id)
-        except (TypeError, ValueError) as ve:
-            raise PostError(
-                f"draft_id는 정수 인덱스 문자열이어야 합니다: {draft_id}"
-            ) from ve
-
-        # 해당 인덱스의 임시저장 글을 열어 편집기로 불러온다
-        clicked = await frame.evaluate(
-            """(i) => {
-                const items = Array.from(
-                    document.querySelectorAll('li.item__mm7Zd')
-                );
-                if (i < 0 || i >= items.length) return false;
-                const btn = items[i].querySelector('button.article_button__JNVjf');
-                if (!btn) return false;
-                btn.click();
-                return true;
-            }""",
-            idx,
-        )
-        if not clicked:
-            raise PostError(
-                f"식별자 {draft_id}에 해당하는 임시저장 항목을 찾을 수 없습니다."
-            )
-        await asyncio.sleep(2)
-
-        return await publish_post(page, wait_for_completion=True)
-
-    except PostError:
-        raise
-    except Exception as e:
-        custom_error = await handle_playwright_error(e, page, "publish_draft")
-        raise PostError(f"임시저장 글 발행 실패: {str(custom_error)}") from e
-
-
-async def delete_draft(
-    page: Page,
-    draft_id: Optional[str] = None,
-    title: Optional[str] = None,
-) -> Dict[str, Any]:
-    """임시저장 글을 삭제합니다.
-
-    ``draft_id``(목록 인덱스 문자열) 또는 ``title``(제목 완전 일치) 중 하나로
-    대상을 지정합니다. 삭제는 되돌릴 수 없으므로, ``title`` 지정 시 완전 일치가
-    정확히 1건일 때만 삭제합니다(0건/2건 이상이면 안전을 위해 중단).
-
-    삭제 버튼 클릭 시 브라우저 ``confirm`` 대화상자가 뜨므로 자동 수락합니다.
-    """
-    if draft_id is None and not title:
-        raise PostError("draft_id 또는 title 중 하나는 반드시 지정해야 합니다.")
-
-    try:
-        frame, opened = await _open_draft_list_frame(page)
-        if not opened:
-            raise PostError("임시저장 목록을 열 수 없습니다 (임시저장 글이 없음).")
-
-        # 대상 인덱스 결정
-        if title:
-            matches = await frame.evaluate(
-                """(t) => {
-                    const items = Array.from(
-                        document.querySelectorAll('li.item__mm7Zd')
-                    );
-                    const idxs = [];
-                    items.forEach((li, i) => {
-                        const s = li.querySelector('strong.title__p1G9u');
-                        if (s && s.textContent.trim() === t) idxs.push(i);
-                    });
-                    return idxs;
-                }""",
-                title,
-            )
-            if len(matches) == 0:
-                raise PostError(f"제목이 일치하는 임시저장 글이 없습니다: {title}")
-            if len(matches) > 1:
-                raise PostError(
-                    f"제목이 일치하는 임시저장 글이 {len(matches)}건입니다. "
-                    f"안전을 위해 삭제하지 않습니다: {title}"
-                )
-            target_index = matches[0]
-        else:
-            try:
-                target_index = int(draft_id)  # type: ignore[arg-type]
-            except (TypeError, ValueError) as ve:
-                raise PostError(
-                    f"draft_id는 정수 인덱스 문자열이어야 합니다: {draft_id}"
-                ) from ve
-
-        # 삭제 confirm 대화상자 자동 수락 (클릭 전에 등록)
-        page.once("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
-
-        result = await frame.evaluate(
-            """(i) => {
-                const items = Array.from(
-                    document.querySelectorAll('li.item__mm7Zd')
-                );
-                if (i < 0 || i >= items.length) {
-                    return {ok: false, total: items.length};
-                }
-                const li = items[i];
-                const s = li.querySelector('strong.title__p1G9u');
-                const del = li.querySelector('button.delete_button__kdXNv');
-                if (!del) return {ok: false, total: items.length};
-                del.click();
-                return {ok: true, title: s ? s.textContent.trim() : ''};
-            }""",
-            target_index,
-        )
-        if not result.get("ok"):
-            raise PostError("삭제할 임시저장 항목/버튼을 찾을 수 없습니다.")
-
-        await asyncio.sleep(2)  # 다이얼로그 수락 + 삭제 처리 대기
-        deleted_title = title or result.get("title") or ""
-        logger.info("임시저장 글 삭제 완료: %s", deleted_title)
-        return {
-            "success": True,
-            "message": f"임시저장 글 1건을 삭제했습니다: {deleted_title}",
-            "deleted_title": deleted_title,
-        }
-
-    except PostError:
-        raise
-    except Exception as e:
-        custom_error = await handle_playwright_error(e, page, "delete_draft")
-        raise PostError(f"임시저장 글 삭제 실패: {str(custom_error)}") from e

@@ -4,8 +4,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-# 프로젝트 src 경로 추가
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+# 프로젝트 src 경로 추가 (scripts/ 기준 상위 디렉토리)
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from naver_blog_mcp.config import config
 from naver_blog_mcp.services.session_manager import SessionManager

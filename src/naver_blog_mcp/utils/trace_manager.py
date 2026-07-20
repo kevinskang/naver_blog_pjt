@@ -22,8 +22,8 @@ class TraceManager:
         """
         self.traces_dir = Path(traces_dir)
         self.traces_dir.mkdir(parents=True, exist_ok=True)
-        self.is_tracing = False
-        self.current_trace_name: Optional[str] = None
+        # context별 진행 중인 trace 이름을 관리합니다 (멀티 계정/동시 호출 안전).
+        self._active_traces: dict[int, str] = {}
 
     async def start_trace(
         self,
@@ -43,8 +43,8 @@ class TraceManager:
             snapshots: DOM 스냅샷 포함 여부
             sources: 소스 코드 포함 여부
         """
-        if self.is_tracing:
-            logger.warning("Trace is already running")
+        if id(context) in self._active_traces:
+            logger.warning("Trace is already running for this context")
             return
 
         try:
@@ -53,8 +53,7 @@ class TraceManager:
                 snapshots=snapshots,
                 sources=sources,
             )
-            self.is_tracing = True
-            self.current_trace_name = name
+            self._active_traces[id(context)] = name
             logger.info(f"Started trace: {name}")
         except Exception as e:
             logger.error(f"Failed to start trace: {e}")
@@ -74,21 +73,20 @@ class TraceManager:
         Returns:
             저장된 Trace 파일 경로
         """
-        if not self.is_tracing:
-            logger.warning("No trace is running")
+        trace_name = self._active_traces.get(id(context))
+        if trace_name is None:
+            logger.warning("No trace is running for this context")
             return None
 
         try:
             # 파일명 생성
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             status = "success" if success else "error"
-            filename = f"{self.current_trace_name}_{status}_{timestamp}.zip"
+            filename = f"{trace_name}_{status}_{timestamp}.zip"
             filepath = self.traces_dir / filename
 
             # Trace 저장
             await context.tracing.stop(path=str(filepath))
-            self.is_tracing = False
-            self.current_trace_name = None
 
             logger.info(f"Trace saved: {filepath}")
             logger.info(f"View trace: playwright show-trace {filepath}")
@@ -96,8 +94,9 @@ class TraceManager:
             return str(filepath)
         except Exception as e:
             logger.error(f"Failed to stop trace: {e}")
-            self.is_tracing = False
             return None
+        finally:
+            self._active_traces.pop(id(context), None)
 
     async def trace_action(
         self,

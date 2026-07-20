@@ -9,8 +9,12 @@ import asyncio
 import os
 from pathlib import Path
 
+import pytest
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+
+# 라이브 네이버 로그인이 필요한 테스트 — RUN_LIVE_TESTS=true 일 때만 실행
+pytestmark = pytest.mark.e2e
 
 # 프로젝트 루트 경로에서 .env 로드
 project_root = Path(__file__).parent.parent

@@ -36,6 +36,19 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: 라이브 네이버 로그인이 필요한 종단 테스트 (RUN_LIVE_TESTS=true 일 때만 실행)",
+    "integration: 여러 모듈을 함께 검증하는 통합 테스트",
+    "unit: 외부 의존이 없는 단위 테스트",
+]
+
+[tool.pyright]
+# pyright가 프로젝트 가상환경(.venv)을 사용하도록 지정해야
+# playwright 등 의존성의 reportMissingImports 오탐을 방지한다.
+venvPath = "."
+venv = ".venv"
+include = ["src"]
+pythonVersion = "3.13"
 
 [tool.black]
 line-length = 88

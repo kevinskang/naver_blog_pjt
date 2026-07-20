@@ -112,3 +112,10 @@ POST_WRITE_CONTENT_BODY = NaverSelectors.POST_WRITE["content_body"]
 POST_WRITE_PUBLISH_BTN = NaverSelectors.POST_WRITE["publish_btn"]
 POST_WRITE_CATEGORY_BTN = NaverSelectors.POST_WRITE["category_select"]
 POST_WRITE_TAG_INPUT = NaverSelectors.POST_WRITE["tag_input"]
+
+# 발행 설정 대화상자 (스마트에디터 ONE, 라이브 검증)
+# class 해시 접미사(__XXXX)는 네이버 배포마다 바뀔 수 있어 상수로 중앙 관리한다.
+# 값은 라이브 동작 코드에서 그대로 옮긴 것으로, 한 글자도 변경하지 말 것.
+PUBLISH_CATEGORY_SELECT_BTN = "button.selectbox_button__jb1Dt"
+PUBLISH_TAG_INPUT = "input.tag_input__rvUB5"
+PUBLISH_CONFIRM_BTN = "button.confirm_btn__WEaBq"
