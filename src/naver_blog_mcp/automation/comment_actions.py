@@ -8,6 +8,7 @@ from playwright.async_api import Page
 
 from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import CommentError
+from .constants import IFRAME_WAIT_MS, PAGE_NAV_TIMEOUT_MS
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +34,12 @@ async def list_comments(
         # 댓글 관리 페이지로 이동
         url = f"https://blog.naver.com/ManageComments.naver?blogId={target_blog_id}"
         logger.info(f"댓글 관리 페이지 이동: {url}")
-        await page.goto(url, wait_until="networkidle", timeout=15000)
+        await page.goto(url, wait_until="networkidle", timeout=PAGE_NAV_TIMEOUT_MS)
 
         # iframe#mainFrame 접근
-        iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=10000)
+        iframe_element = await page.wait_for_selector(
+            "iframe#mainFrame", timeout=IFRAME_WAIT_MS
+        )
         frame = await iframe_element.content_frame()
         if not frame:
             raise CommentError(
@@ -118,10 +121,12 @@ async def delete_comment(
 
         url = f"https://blog.naver.com/ManageComments.naver?blogId={target_blog_id}"
         logger.info(f"댓글 관리 페이지 이동: {url}")
-        await page.goto(url, wait_until="networkidle", timeout=15000)
+        await page.goto(url, wait_until="networkidle", timeout=PAGE_NAV_TIMEOUT_MS)
 
         # iframe#mainFrame 접근
-        iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=10000)
+        iframe_element = await page.wait_for_selector(
+            "iframe#mainFrame", timeout=IFRAME_WAIT_MS
+        )
         frame = await iframe_element.content_frame()
         if not frame:
             raise CommentError(

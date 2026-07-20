@@ -7,6 +7,7 @@ from playwright.async_api import Page
 
 from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import StatsError
+from .constants import PAGE_NAV_TIMEOUT_MS
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,9 @@ async def get_blog_stats(page: Page, blog_id: Optional[str] = None) -> Dict[str,
         )
         logger.info(f"통계 페이지 이동: {stats_url}")
 
-        await page.goto(stats_url, wait_until="networkidle", timeout=15000)
+        await page.goto(
+            stats_url, wait_until="networkidle", timeout=PAGE_NAV_TIMEOUT_MS
+        )
         await page.wait_for_timeout(2000)  # 차트/데이터 로딩 대기
 
         today_visitors = "0"

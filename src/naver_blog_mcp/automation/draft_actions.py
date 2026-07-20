@@ -13,6 +13,7 @@ from playwright.async_api import Page
 from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import PostError
 from ..utils.iframe_helper import get_editor_frame
+from .constants import IFRAME_WAIT_MS
 from .editor_input import navigate_to_post_write_page
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ async def save_post_as_draft(page: Page) -> Dict[str, Any]:
 
     main_frame = None
     try:
-        main_frame = await get_editor_frame(page, timeout=10000)
+        main_frame = await get_editor_frame(page, timeout=IFRAME_WAIT_MS)
     except Exception:
         main_frame = None
 
@@ -72,7 +73,9 @@ async def _open_draft_list_frame(page: Page):
     await navigate_to_post_write_page(page)
     await asyncio.sleep(2)
 
-    iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=10000)
+    iframe_element = await page.wait_for_selector(
+        "iframe#mainFrame", timeout=IFRAME_WAIT_MS
+    )
     frame = await iframe_element.content_frame()
     if frame is None:
         raise PostError("임시저장 목록을 위해 iframe#mainFrame에 접근할 수 없습니다.")

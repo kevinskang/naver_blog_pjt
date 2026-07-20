@@ -17,6 +17,7 @@ from ..utils.error_handler import handle_playwright_error
 from ..utils.exceptions import PostError
 from ..utils.iframe_helper import get_editor_frame
 from ..utils.selector_helper import dismiss_overlays
+from .constants import IFRAME_WAIT_MS, PAGE_NAV_TIMEOUT_MS
 
 # --- 하위호환 re-export (분리된 모듈의 심볼을 이 모듈 이름공간에 노출) ---
 # create_blog_post 는 아래 심볼들을 호출하므로 실사용이기도 하다.
@@ -573,7 +574,9 @@ async def delete_blog_post(page: Page, post_url: str) -> Dict[str, Any]:
     try:
         await page.goto(post_url, wait_until="networkidle")
 
-        iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=10000)
+        iframe_element = await page.wait_for_selector(
+            "iframe#mainFrame", timeout=IFRAME_WAIT_MS
+        )
         frame = await iframe_element.content_frame()
         if not frame:
             raise PostError("삭제를 위해 iframe#mainFrame에 접근할 수 없습니다.")
@@ -615,7 +618,7 @@ async def delete_blog_post(page: Page, post_url: str) -> Dict[str, Any]:
         if not clicked:
             raise PostError("삭제 버튼을 찾을 수 없습니다.")
 
-        await page.wait_for_url("**/PostList.naver*", timeout=15000)
+        await page.wait_for_url("**/PostList.naver*", timeout=PAGE_NAV_TIMEOUT_MS)
         logger.info("글 삭제 성공 및 목록 이동 완료")
         return {
             "success": True,
@@ -639,7 +642,9 @@ async def edit_blog_post(
     try:
         await page.goto(post_url, wait_until="networkidle")
 
-        iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=10000)
+        iframe_element = await page.wait_for_selector(
+            "iframe#mainFrame", timeout=IFRAME_WAIT_MS
+        )
         frame = await iframe_element.content_frame()
         if not frame:
             raise PostError("수정을 위해 iframe#mainFrame에 접근할 수 없습니다.")
@@ -678,7 +683,7 @@ async def edit_blog_post(
         if not clicked:
             raise PostError("수정 버튼을 찾을 수 없습니다.")
 
-        await page.wait_for_url("**/PostWriteForm.naver*", timeout=15000)
+        await page.wait_for_url("**/PostWriteForm.naver*", timeout=PAGE_NAV_TIMEOUT_MS)
         await asyncio.sleep(2)
 
         # 제목 수정
@@ -738,7 +743,9 @@ async def list_blog_posts(page: Page, limit: int = 10) -> Dict[str, Any]:
         url = f"https://blog.naver.com/{blog_id}"
         await page.goto(url, wait_until="networkidle")
 
-        iframe_element = await page.wait_for_selector("iframe#mainFrame", timeout=10000)
+        iframe_element = await page.wait_for_selector(
+            "iframe#mainFrame", timeout=IFRAME_WAIT_MS
+        )
         frame = await iframe_element.content_frame()
         if not frame:
             raise PostError("글 목록을 위해 iframe#mainFrame에 접근할 수 없습니다.")

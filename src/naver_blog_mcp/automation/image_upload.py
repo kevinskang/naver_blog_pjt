@@ -24,6 +24,7 @@ from ..utils.exceptions import (
 from ..utils.iframe_helper import get_editor_frame
 from ..utils.retry import retry_on_error
 from ..utils.selector_helper import wait_for_any_selector
+from .constants import MAX_IMAGE_SIZE_BYTES, UPLOAD_COMPLETE_TIMEOUT_MS
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,7 @@ def _validate_image_path(image_path: Path) -> None:
         )
 
     file_size = image_path.stat().st_size
-    if file_size > 10 * 1024 * 1024:
+    if file_size > MAX_IMAGE_SIZE_BYTES:
         raise UploadError(
             f"Image file too large: {file_size / 1024 / 1024:.2f}MB (max 10MB)",
             details={"path": str(image_path), "size": file_size},
@@ -276,7 +277,7 @@ async def upload_image(
         if wait_for_complete:
             await wait_for_upload_complete(
                 frame,
-                timeout=10000,
+                timeout=UPLOAD_COMPLETE_TIMEOUT_MS,
                 initial_count=initial_image_count,
             )
 

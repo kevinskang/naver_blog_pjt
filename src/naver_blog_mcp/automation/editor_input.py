@@ -15,6 +15,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from ..utils.exceptions import PostError
 from ..utils.iframe_helper import get_editor_frame
 from ..utils.selector_helper import find_element_with_alternatives
+from .constants import IFRAME_WAIT_MS
 from .selectors import (
     POST_WRITE_CONTENT_BODY,
     POST_WRITE_TITLE,
@@ -158,7 +159,7 @@ async def _paste_html_into_body(page: Page, html: str) -> bool:
     """
     main_frame = None
     try:
-        main_frame = await get_editor_frame(page, timeout=10000)
+        main_frame = await get_editor_frame(page, timeout=IFRAME_WAIT_MS)
     except Exception:  # noqa: S110
         main_frame = None
     if main_frame is None:
@@ -258,7 +259,7 @@ async def fill_post_content(  # noqa: C901
         main_frame = None
         try:
             iframe_element = await page.wait_for_selector(
-                "iframe#mainFrame", timeout=10000
+                "iframe#mainFrame", timeout=IFRAME_WAIT_MS
             )
             if iframe_element is not None:
                 main_frame = await iframe_element.content_frame()
